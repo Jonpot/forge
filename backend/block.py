@@ -17,6 +17,7 @@ class BlockOutput:
     outputs: dict[str, pd.DataFrame] = field(default_factory=dict)
     images: list[Any] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    namespace: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         normalized = {str(key): value for key, value in self.outputs.items()}
@@ -99,6 +100,18 @@ class BaseBlock(ABC):
     input_labels: list[str] = []
     output_labels: list[str] = ["output"]
     always_execute: bool = False
+    # When True, the block's BlockOutput.namespace is persisted alongside the
+    # parquet checkpoint and made available to namespace-consuming descendants.
+    produces_namespace: bool = False
+    # When True, _resolve_input_data passes parent namespaces (synthesizing
+    # {"data": parent_df} for non-namespace-producing parents) instead of
+    # raw DataFrames.
+    consumes_namespace: bool = False
+    # If set, the param name that drives n_inputs at runtime (frontend uses this
+    # to recompute handle count when the user edits the param).
+    arity_input_param: str | None = None
+    # If set, the param name that drives n_outputs at runtime.
+    arity_output_param: str | None = None
 
     @abstractmethod
     def execute(self, data: Any, params: Any | None = None) -> BlockOutput:
@@ -118,6 +131,32 @@ class BaseBlock(ABC):
     @classmethod
     def should_force_execute(cls, params: dict[str, Any] | None = None) -> bool:
         return bool(getattr(cls, "always_execute", False))
+
+    @classmethod
+    def resolve_n_inputs(cls, params: dict[str, Any] | None = None) -> int:
+        del params
+        return int(getattr(cls, "n_inputs", 1))
+
+    @classmethod
+    def resolve_input_labels(
+        cls, params: dict[str, Any] | None = None
+    ) -> list[str]:
+        del params
+        labels = getattr(cls, "input_labels", [])
+        if isinstance(labels, (list, tuple)):
+            return [str(item) for item in labels]
+        return []
+
+    @classmethod
+    def resolve_output_labels(
+        cls, params: dict[str, Any] | None = None
+    ) -> list[str]:
+        del params
+        labels = getattr(cls, "output_labels", ["output"])
+        if not isinstance(labels, (list, tuple)) or not labels:
+            return ["output"]
+        normalized = [str(item) for item in labels if str(item).strip()]
+        return normalized or ["output"]
 
 
 __all__ = [

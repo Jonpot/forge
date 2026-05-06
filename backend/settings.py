@@ -42,6 +42,7 @@ def _load_dotenv_values() -> dict[str, str]:
 def _forge_data_dir() -> Path | None:
     """Return the platform-specific Forge data directory."""
     import sys
+
     if sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA")
         if local:
@@ -65,6 +66,7 @@ def env_or_default(key: str, default: str) -> str:
 def _default_custom_blocks_dir() -> str:
     """Return the platform-specific default directory for user-installed custom blocks."""
     import sys
+
     if sys.platform == "win32":
         docs = Path.home() / "Documents"
     elif sys.platform == "darwin":
@@ -83,11 +85,13 @@ class Settings:
     default_file_path: str = ""
     workspace_dir: str = ""
     log_level: str = "INFO"
-    cors_origins: list[str] = field(default_factory=lambda: [
-        "http://tauri.localhost",
-        "https://tauri.localhost",
-        "http://localhost:1420",
-    ])
+    cors_origins: list[str] = field(
+        default_factory=lambda: [
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://localhost:1420",
+        ]
+    )
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -103,6 +107,6 @@ class Settings:
             ),
             default_file_path=env_or_default("DEFAULT_FILE_PATH", ""),
             workspace_dir=env_or_default("WORKSPACE_DIR", ""),
-            log_level=env_or_default("LOG_LEVEL", "INFO"),
+            log_level=env_or_default("LOG_LEVEL", "DEBUG"),
             cors_origins=cors or ["http://localhost:5173"],
         )

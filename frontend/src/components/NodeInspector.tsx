@@ -1,8 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getCheckpointPreview, getCheckpointProvenance } from "@/api/client";
 import { FileBrowser } from "./FileBrowser";
 import { ImageLightbox, ImageThumbnail } from "./ImagePreview";
+
+// Lazy-loaded so Monaco's ~3MB chunk is only fetched when the user opens an
+// inspector with a code-typed param. Keeps the main bundle slim.
+const MonacoCodeEditor = lazy(() => import("./MonacoCodeEditor"));
 import type { ForgeNodeData } from "@/hooks/usePipeline";
 import type { BlockParamSpec, BrowseMode, CheckpointPreview } from "@/types/pipeline";
 import type { Node } from "@xyflow/react";
@@ -171,6 +175,9 @@ export function NodeInspector({
           paramSchema={paramSchema}
           paramDescriptions={paramDescriptions}
           onChange={handleParamChange}
+          hideCodeField={paramSchema.some(
+            (p) => p.key === "code" || /code/i.test(p.description ?? ""),
+          )}
         />
         )}
         {activeTab === "data" && (
@@ -260,18 +267,25 @@ function ParamForm({
   paramSchema,
   paramDescriptions,
   onChange,
+  hideCodeField = false,
 }: {
   params: Record<string, unknown>;
   paramSchema: BlockParamSpec[];
   paramDescriptions: Record<string, string>;
   onChange: (key: string, value: unknown) => void;
+  hideCodeField?: boolean;
 }) {
-  const fields = buildParamFields(params, paramSchema, paramDescriptions);
+  const allFields = buildParamFields(params, paramSchema, paramDescriptions);
+  const fields = hideCodeField
+    ? allFields.filter(
+        (f) => !(f.key === "code" || /code/i.test(f.description ?? "")),
+      )
+    : allFields;
 
   if (fields.length === 0) {
     return (
       <p className="text-forge-muted text-xs px-4 py-6 text-center">
-        No parameters
+        {hideCodeField ? "Code is edited inline on the block." : "No parameters"}
       </p>
     );
   }
@@ -437,6 +451,35 @@ function ParamField({
           typeText={typeText}
           onChange={(parsed) => onChange(paramKey, parsed)}
         />
+      </div>
+    );
+  }
+
+  const isCodeField = paramKey === "code" || /code/i.test(description);
+  if (isCodeField) {
+    const codeText = value == null ? "" : String(value);
+    return (
+      <div>
+        {header}
+        {descriptionBlock}
+        <Suspense
+          fallback={
+            <textarea
+              id={inputId}
+              className={`${inputClass} min-h-[160px] font-mono resize-y`}
+              value={codeText}
+              placeholder="loading editor…"
+              spellCheck={false}
+              readOnly
+            />
+          }
+        >
+          <MonacoCodeEditor
+            value={codeText}
+            onChange={(next) => onChange(paramKey, next === "" ? null : next)}
+            ariaLabel={`${paramKey} code editor`}
+          />
+        </Suspense>
       </div>
     );
   }

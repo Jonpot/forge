@@ -44,6 +44,7 @@ class ExecutedBlockResult:
     outputs: dict[str, pd.DataFrame]
     metadata: dict[str, Any] = field(default_factory=dict)
     image_paths: list[str] = field(default_factory=list)
+    namespace: dict[str, Any] | None = None
 
     @property
     def data(self) -> pd.DataFrame:
@@ -100,7 +101,7 @@ class ExportRuntime:
         params_payload = block_cls.normalize_params_payload(params or {})
         params_obj = self.runner._instantiate_params(block_cls, params_payload)
         input_refs = list(inputs or [])
-        expected_inputs = int(getattr(block_cls, "n_inputs", 1))
+        expected_inputs = int(block_cls.resolve_n_inputs(params_payload))
         if len(input_refs) != expected_inputs:
             raise ValueError(
                 f"Node {node_id} ({block_cls.__name__}) expects {expected_inputs} inputs, "
@@ -129,12 +130,13 @@ class ExportRuntime:
                 block_cls=block_cls,
                 checkpoint_id=existing_checkpoint_id,
                 history_hash=history_hash,
+                params_payload=params_payload,
             )
             self.results[node_id] = result
             self.reused_nodes.append(node_id)
             return result
 
-        input_data = self._resolve_input_data(block_cls, input_refs)
+        input_data = self._resolve_input_data(block_cls, input_refs, params_payload)
         block.validate(input_data)
 
         started = perf_counter()
@@ -145,7 +147,7 @@ class ExportRuntime:
                 f"Block {block_cls.__name__} returned {type(output)!r}; expected BlockOutput."
             )
 
-        output_frames = self.runner._normalize_output_frames(block_cls, output)
+        output_frames = self.runner._normalize_output_frames(block_cls, output, params_payload)
         output_df = output_frames["output_0"]
         provenance = Provenance(
             checkpoint_id="",
@@ -159,11 +161,16 @@ class ExportRuntime:
             output_shape=[int(output_df.shape[0]), int(output_df.shape[1])],
             images=[],
         )
+        output_namespace: dict[str, Any] | None = None
+        if getattr(block_cls, "produces_namespace", False):
+            output_namespace = output.namespace if output.namespace is not None else {}
+
         checkpoint_id = self.checkpoint_store.save(
             data=output_df,
             provenance=provenance,
             outputs=output_frames,
             images=output.images,
+            namespace=output_namespace,
         )
         result = ExecutedBlockResult(
             node_id=node_id,
@@ -174,6 +181,7 @@ class ExportRuntime:
             outputs=output_frames,
             metadata=dict(output.metadata),
             image_paths=self._image_paths(checkpoint_id),
+            namespace=output_namespace,
         )
         self.results[node_id] = result
         self.executed_nodes.append(node_id)
@@ -199,13 +207,29 @@ class ExportRuntime:
         self,
         block_cls: type[Any],
         input_refs: list[OutputRef],
+        params: dict[str, Any] | None = None,
     ) -> Any:
-        n_inputs = int(getattr(block_cls, "n_inputs", 1))
+        n_inputs = int(block_cls.resolve_n_inputs(params))
         if n_inputs == 0:
             return None
+
+        if getattr(block_cls, "consumes_namespace", False):
+            resolved = [self._resolve_parent_namespace(ref) for ref in input_refs]
+            return resolved[0] if n_inputs == 1 else resolved
+
         if n_inputs == 1:
             return input_refs[0].frame
         return [ref.frame for ref in input_refs]
+
+    def _resolve_parent_namespace(self, ref: OutputRef) -> dict[str, Any]:
+        # Always reload from disk so each child fork gets a fresh copy. Sibling
+        # cells cannot leak mutations through a shared in-memory dict.
+        cp = ref.result.checkpoint_id
+        if cp and self.checkpoint_store.has_namespace(cp):
+            loaded = self.checkpoint_store.load_namespace(cp)
+            if loaded is not None:
+                return loaded
+        return {"data": ref.frame}
 
     def _parent_history_hash(
         self,
@@ -231,9 +255,13 @@ class ExportRuntime:
         block_cls: type[Any],
         checkpoint_id: str,
         history_hash: str,
+        params_payload: dict[str, Any] | None = None,
     ) -> ExecutedBlockResult:
-        output_handles = self.runner._expected_output_handles(block_cls)
+        output_handles = self.runner._expected_output_handles(block_cls, params_payload)
         outputs = self.checkpoint_store.load_outputs(checkpoint_id, output_handles)
+        loaded_namespace: dict[str, Any] | None = None
+        if getattr(block_cls, "produces_namespace", False):
+            loaded_namespace = self.checkpoint_store.load_namespace(checkpoint_id)
         return ExecutedBlockResult(
             node_id=node_id,
             block_key=block_key,
@@ -243,6 +271,7 @@ class ExportRuntime:
             outputs=outputs,
             metadata={},
             image_paths=self._image_paths(checkpoint_id),
+            namespace=loaded_namespace,
         )
 
     def _image_paths(self, checkpoint_id: str) -> list[str]:

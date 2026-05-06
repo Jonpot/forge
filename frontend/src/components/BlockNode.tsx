@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Handle,
@@ -16,6 +16,19 @@ import {
   categoryIcon,
   useCategoryStyleVersion,
 } from "@/utils/categoryStyles";
+import { useNodeOperations } from "./NodeOperationsContext";
+
+// Monaco is only needed when the user actually has a code-typed block on the
+// canvas. Lazy-load to keep the initial bundle slim.
+const MonacoCodeEditor = lazy(() => import("./MonacoCodeEditor"));
+
+function blockHasCodeParam(data: ForgeNodeData): boolean {
+  const schema = data.paramSchema;
+  if (!Array.isArray(schema)) return false;
+  return schema.some(
+    (p) => p.key === "code" || /code/i.test(p.description ?? ""),
+  );
+}
 
 type ForgeNode = Node<ForgeNodeData, "forgeBlock">;
 
@@ -62,6 +75,7 @@ export const BlockNode = memo(function BlockNode({
   useCategoryStyleVersion();
   const { blockName, category, n_inputs, inputLabels, outputLabels, nodeState } = data;
   const { getNode, setNodes } = useReactFlow();
+  const nodeOps = useNodeOperations();
   const status = nodeState?.status ?? "idle";
   const border = STATUS_BORDER[status] ?? STATUS_BORDER.idle;
   const header = STATUS_HEADER[status] ?? STATUS_HEADER.idle;
@@ -76,9 +90,43 @@ export const BlockNode = memo(function BlockNode({
   const minHeight =
     maxHandles > 1 ? 30 + (maxHandles - 1) * 24 + 20 : undefined;
   const isViz = category === "Visualization";
-  const minResizableHeight = isViz
-    ? Math.max(minHeight ?? 0, 86)
-    : Math.max(minHeight ?? 0, 170);
+  const isCode = blockHasCodeParam(data);
+  const minResizableHeight = isCode
+    ? Math.max(minHeight ?? 0, 220)
+    : isViz
+      ? Math.max(minHeight ?? 0, 86)
+      : Math.max(minHeight ?? 0, 170);
+
+  const handleCodeChange = useCallback(
+    (next: string) => {
+      if (!nodeOps) return;
+      const currentParams = (data.params ?? {}) as Record<string, unknown>;
+      if (currentParams.code === next) return;
+      nodeOps.updateNodeParams(id, { ...currentParams, code: next });
+    },
+    [id, data.params, nodeOps],
+  );
+
+  // React Flow listens for arrows/space/etc. via native document listeners,
+  // which fire after React's synthetic event system. Stop the native bubble
+  // phase at the editor wrapper so keystrokes never reach document.
+  const editorWrapperRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!isCode) return;
+    const el = editorWrapperRef.current;
+    if (!el) return;
+    const stop = (e: KeyboardEvent) => {
+      e.stopPropagation();
+    };
+    el.addEventListener("keydown", stop);
+    el.addEventListener("keyup", stop);
+    el.addEventListener("keypress", stop);
+    return () => {
+      el.removeEventListener("keydown", stop);
+      el.removeEventListener("keyup", stop);
+      el.removeEventListener("keypress", stop);
+    };
+  }, [isCode]);
   const checkpointId = nodeState?.checkpointId;
   const progressCurrent = nodeState?.progressCurrent;
   const progressTotal = nodeState?.progressTotal;
@@ -267,16 +315,16 @@ export const BlockNode = memo(function BlockNode({
           bg-forge-surface cursor-default
           flex flex-col
           transition-[border-color,box-shadow] duration-200
-          ${isViz ? "min-w-[140px] w-full h-full" : "min-w-[170px] max-w-[220px]"}
+          ${isViz || isCode ? "min-w-[140px] w-full h-full" : "min-w-[170px] max-w-[220px]"}
         `}
         style={minHeight !== undefined ? { minHeight } : undefined}
       >
-        {isViz && (
+        {(isViz || isCode) && (
           <NodeResizer
             isVisible={selected}
-            minWidth={140}
+            minWidth={isCode ? 320 : 140}
             minHeight={minResizableHeight}
-            keepAspectRatio={primaryImageAspect !== null}
+            keepAspectRatio={isViz && primaryImageAspect !== null}
             onResize={handleResize}
             color="#6366f1"
             handleStyle={{
@@ -294,30 +342,34 @@ export const BlockNode = memo(function BlockNode({
           />
         )}
 
-        {/* Input handles */}
-        {inputHandles.map((h, i) => (
-          <div
-            key={h.id}
-            className="absolute left-0"
-            style={{ top: n_inputs > 1 ? `${30 + i * 24}px` : "50%", transform: "translateY(-50%)" }}
-          >
-            <span className="absolute -left-[90px] w-[82px] text-[9px] text-right text-forge-muted leading-tight pointer-events-none">
-              {h.label}
-            </span>
-            <Handle
-              id={h.id}
-              type="target"
-              position={Position.Left}
-              style={{
-                background: "#6366f1",
-                border: "2px solid #818cf8",
-                width: 10,
-                height: 10,
-              }}
-              title={h.label}
-            />
-          </div>
-        ))}
+        {/* Input handles — position the Handle directly so its DOM center
+            (where React Flow attaches edges) matches the visual dot. */}
+        {inputHandles.map((h, i) => {
+          const top = n_inputs > 1 ? `${30 + i * 24}px` : "50%";
+          return (
+            <div key={h.id}>
+              <Handle
+                id={h.id}
+                type="target"
+                position={Position.Left}
+                style={{
+                  top,
+                  background: "#6366f1",
+                  border: "2px solid #818cf8",
+                  width: 10,
+                  height: 10,
+                }}
+                title={h.label}
+              />
+              <span
+                className="absolute w-[82px] text-[9px] text-right text-forge-muted leading-tight pointer-events-none"
+                style={{ top, left: -90, transform: "translateY(-50%)" }}
+              >
+                {h.label}
+              </span>
+            </div>
+          );
+        })}
 
         {/* Header */}
         <div className={`${header} rounded-t-md px-3 py-2`}>
@@ -330,6 +382,30 @@ export const BlockNode = memo(function BlockNode({
             </span>
           </div>
         </div>
+
+        {/* Inline code editor for FreeformCode-style blocks */}
+        {isCode && (
+          <div
+            ref={editorWrapperRef}
+            className="nodrag nopan nowheel px-2 pt-2 pb-1 flex-1 min-h-0"
+          >
+            <Suspense
+              fallback={
+                <div className="h-full w-full rounded border border-forge-border bg-forge-bg flex items-center justify-center text-[11px] text-forge-muted">
+                  loading editor…
+                </div>
+              }
+            >
+              <MonacoCodeEditor
+                value={typeof data.params?.code === "string" ? (data.params.code as string) : ""}
+                onChange={handleCodeChange}
+                height="100%"
+                fontSize={8}
+                ariaLabel="cell code"
+              />
+            </Suspense>
+          </div>
+        )}
 
         {/* Footer */}
         <div className="px-3 py-1.5 flex items-center justify-between gap-2">
@@ -463,30 +539,34 @@ export const BlockNode = memo(function BlockNode({
           </div>
         )}
 
-        {/* Output handles */}
-        {outputHandles.map((h, i) => (
-          <div
-            key={h.id}
-            className="absolute right-0"
-            style={{ top: nOutputs > 1 ? `${30 + i * 24}px` : "50%", transform: "translateY(-50%)" }}
-          >
-            <span className="absolute -right-[90px] w-[82px] text-[9px] text-left text-forge-muted leading-tight pointer-events-none">
-              {h.label}
-            </span>
-            <Handle
-              id={h.id}
-              type="source"
-              position={Position.Right}
-              style={{
-                background: "#6366f1",
-                border: "2px solid #818cf8",
-                width: 10,
-                height: 10,
-              }}
-              title={h.label}
-            />
-          </div>
-        ))}
+        {/* Output handles — position the Handle directly so its DOM center
+            (where React Flow attaches edges) matches the visual dot. */}
+        {outputHandles.map((h, i) => {
+          const top = nOutputs > 1 ? `${30 + i * 24}px` : "50%";
+          return (
+            <div key={h.id}>
+              <Handle
+                id={h.id}
+                type="source"
+                position={Position.Right}
+                style={{
+                  top,
+                  background: "#6366f1",
+                  border: "2px solid #818cf8",
+                  width: 10,
+                  height: 10,
+                }}
+                title={h.label}
+              />
+              <span
+                className="absolute w-[82px] text-[9px] text-left text-forge-muted leading-tight pointer-events-none"
+                style={{ top, right: -90, transform: "translateY(-50%)" }}
+              >
+                {h.label}
+              </span>
+            </div>
+          );
+        })}
       </div>
 
       {/* Lightbox — portalled to document.body so it escapes the RF transform */}

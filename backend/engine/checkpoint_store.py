@@ -7,9 +7,51 @@ import re
 import shutil
 from typing import Any
 
+import dill
+import numpy as np
 import pandas as pd
 
+from backend.engine.object_store import ObjectStore
 from backend.engine.provenance import Provenance, canonical_json
+
+
+_OBJECT_STORE_DIRNAME = "_objects"
+
+
+class _ContentAddressedPickler(dill.Pickler):
+    """Pickler that diverts large DataFrames / ndarrays into an ObjectStore.
+
+    persistent_id() is the standard pickle hook for "instead of serializing
+    this object inline, here's a stable identifier — go look it up on
+    reconstruction." Returning None means fall through to default pickling.
+    """
+
+    def __init__(self, file: Any, *, store: ObjectStore) -> None:
+        super().__init__(file, recurse=True)
+        self._store = store
+
+    def persistent_id(self, obj: Any) -> Any:
+        if isinstance(obj, pd.DataFrame) and ObjectStore.should_intercept_dataframe(obj):
+            return ("dataframe", self._store.put_dataframe(obj))
+        if isinstance(obj, np.ndarray) and ObjectStore.should_intercept_ndarray(obj):
+            return ("ndarray", self._store.put_ndarray(obj))
+        return None
+
+
+class _ContentAddressedUnpickler(dill.Unpickler):
+    def __init__(self, file: Any, *, store: ObjectStore) -> None:
+        super().__init__(file)
+        self._store = store
+
+    def persistent_load(self, pid: Any) -> Any:
+        if not isinstance(pid, tuple) or len(pid) != 2:
+            raise dill.UnpicklingError(f"Unrecognized persistent id: {pid!r}")
+        kind, content_hash = pid
+        if kind == "dataframe":
+            return self._store.get_dataframe(str(content_hash))
+        if kind == "ndarray":
+            return self._store.get_ndarray(str(content_hash))
+        raise dill.UnpicklingError(f"Unknown persistent id kind: {kind!r}")
 
 
 @dataclass(slots=True)
@@ -25,6 +67,14 @@ class CheckpointStore:
         self.root_dir = Path(root_dir)
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self._index_path = self.root_dir / "index.json"
+        # Content-addressed store for large values inside namespace pickles.
+        # Lives next to the per-checkpoint dirs but is named with a leading
+        # underscore so checkpoint IDs (sha256 hex) can never collide.
+        self._object_store = ObjectStore(self.root_dir / _OBJECT_STORE_DIRNAME)
+
+    @property
+    def object_store(self) -> ObjectStore:
+        return self._object_store
 
     def _load_index(self) -> dict[str, str]:
         if not self._index_path.exists():
@@ -63,6 +113,7 @@ class CheckpointStore:
         provenance: Provenance,
         outputs: dict[str, pd.DataFrame] | None = None,
         images: list[Any] | None = None,
+        namespace: dict[str, Any] | None = None,
     ) -> str:
         checkpoint_id = provenance.history_hash.replace("sha256:", "")
         checkpoint_dir = self._checkpoint_dir(checkpoint_id)
@@ -87,6 +138,9 @@ class CheckpointStore:
 
         image_names = self._save_images(checkpoint_dir, checkpoint_id, images or [])
 
+        if namespace is not None:
+            self._save_namespace(checkpoint_dir, namespace)
+
         provenance.checkpoint_id = checkpoint_id
         provenance.images = image_names
         provenance_path = checkpoint_dir / "provenance.json"
@@ -99,6 +153,37 @@ class CheckpointStore:
         index_payload[provenance.history_hash] = checkpoint_id
         self._save_index(index_payload)
         return checkpoint_id
+
+    def _namespace_path(self, checkpoint_dir: Path) -> Path:
+        return checkpoint_dir / "namespace.pkl"
+
+    def _save_namespace(
+        self,
+        checkpoint_dir: Path,
+        namespace: dict[str, Any],
+    ) -> None:
+        path = self._namespace_path(checkpoint_dir)
+        if path.exists():
+            return
+        with path.open("wb") as fh:
+            pickler = _ContentAddressedPickler(fh, store=self._object_store)
+            pickler.dump(namespace)
+
+    def has_namespace(self, checkpoint_id: str) -> bool:
+        return self._namespace_path(self._checkpoint_dir(checkpoint_id)).exists()
+
+    def load_namespace(self, checkpoint_id: str) -> dict[str, Any] | None:
+        path = self._namespace_path(self._checkpoint_dir(checkpoint_id))
+        if not path.exists():
+            return None
+        with path.open("rb") as fh:
+            unpickler = _ContentAddressedUnpickler(fh, store=self._object_store)
+            obj = unpickler.load()
+        if not isinstance(obj, dict):
+            raise TypeError(
+                f"Checkpoint '{checkpoint_id}' namespace.pkl did not deserialize to dict."
+            )
+        return obj
 
     def _save_images(
         self,
@@ -192,6 +277,11 @@ class CheckpointStore:
         removed: list[str] = []
         for path in self.root_dir.iterdir():
             if not path.is_dir():
+                continue
+            if path.name == _OBJECT_STORE_DIRNAME:
+                # Content-addressed object store is shared across checkpoints;
+                # not a checkpoint dir itself. TODO: prune by reachability from
+                # surviving namespaces in a separate pass.
                 continue
             if path.name in keep_checkpoint_ids:
                 continue

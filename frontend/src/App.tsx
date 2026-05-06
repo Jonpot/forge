@@ -26,6 +26,7 @@ import {
 import { BlockPalette } from "./components/BlockPalette";
 import { Canvas } from "./components/Canvas";
 import { NodeInspector } from "./components/NodeInspector";
+import { NodeOperationsProvider } from "./components/NodeOperationsContext";
 import { OnboardingTour } from "./components/OnboardingTour";
 import { OnboardingWelcome } from "./components/OnboardingWelcome";
 import { PluginManagerModal } from "./components/PluginManagerModal";
@@ -1008,6 +1009,7 @@ export default function App() {
           onDeleteBlock={handleDeleteBlock}
         />
 
+        <NodeOperationsProvider value={{ updateNodeParams: handleUpdateNodeParams }}>
         <Canvas
           nodes={nodesWithCommentZIndex}
           edges={edges}
@@ -1040,6 +1042,7 @@ export default function App() {
             onDelete={handleDeleteNode}
           />
         )}
+        </NodeOperationsProvider>
       </div>
 
       {showWelcome && (
