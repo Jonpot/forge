@@ -64,7 +64,11 @@ class PipelineRunner:
         node_map, incoming, topo_order = self._prepare_graph(pipeline)
         node_results: dict[str, NodeExecutionResult] = {}
         node_outputs: dict[str, dict[str, pd.DataFrame]] = {}
-        node_namespaces: dict[str, dict[str, Any]] = {}
+        # Phase 5b: namespaces are no longer cached in-memory across nodes.
+        # Each child reloads its parent namespaces from disk via
+        # CheckpointStore.load_namespace, which deserializes a fresh copy
+        # (with object refs resolved from the content-addressed store).
+        # This guarantees sibling cells can't leak in-place mutations.
         node_checkpoint_ids: dict[str, str] = {}
         computed_hashes: dict[str, str] = {}
         executed_nodes: list[str] = []
@@ -133,10 +137,6 @@ class PipelineRunner:
                     node_outputs[node_id] = self.checkpoint_store.load_outputs(
                         existing_checkpoint_id, output_handles
                     )
-                    if getattr(block_cls, "produces_namespace", False):
-                        loaded_ns = self.checkpoint_store.load_namespace(existing_checkpoint_id)
-                        if loaded_ns is not None:
-                            node_namespaces[node_id] = loaded_ns
                     node_checkpoint_ids[node_id] = existing_checkpoint_id
                     node_results[node_id] = NodeExecutionResult(
                         node_id=node_id,
@@ -162,7 +162,7 @@ class PipelineRunner:
                     parent_refs,
                     node_outputs,
                     params_payload,
-                    namespaces=node_namespaces,
+                    parent_checkpoint_ids=node_checkpoint_ids,
                 )
                 block.validate(input_data)
 
@@ -219,8 +219,6 @@ class PipelineRunner:
                 )
 
                 node_outputs[node_id] = output_frames
-                if output_namespace is not None:
-                    node_namespaces[node_id] = output_namespace
                 node_checkpoint_ids[node_id] = checkpoint_id
                 node_results[node_id] = NodeExecutionResult(
                     node_id=node_id,
@@ -321,16 +319,16 @@ class PipelineRunner:
         outputs: dict[str, dict[str, pd.DataFrame]],
         params: dict[str, Any] | None = None,
         *,
-        namespaces: dict[str, dict[str, Any]] | None = None,
+        parent_checkpoint_ids: dict[str, str] | None = None,
     ) -> Any:
         n_inputs = block_cls.resolve_n_inputs(params)
         if n_inputs == 0:
             return None
 
         if getattr(block_cls, "consumes_namespace", False):
-            ns_lookup = namespaces or {}
+            cp_lookup = parent_checkpoint_ids or {}
             resolved = [
-                self._resolve_parent_namespace(parent_ref, outputs, ns_lookup)
+                self._resolve_parent_namespace(parent_ref, outputs, cp_lookup)
                 for parent_ref in parent_refs
             ]
             if n_inputs == 1:
@@ -345,11 +343,15 @@ class PipelineRunner:
         self,
         parent_ref: ParentInputRef,
         outputs: dict[str, dict[str, pd.DataFrame]],
-        namespaces: dict[str, dict[str, Any]],
+        parent_checkpoint_ids: dict[str, str],
     ) -> dict[str, Any]:
-        existing = namespaces.get(parent_ref.source_node_id)
-        if existing is not None:
-            return existing
+        # Always reload from disk so each fork gets a fresh copy. Sibling cells
+        # cannot leak mutations to one another via shared parent state.
+        cp = parent_checkpoint_ids.get(parent_ref.source_node_id)
+        if cp is not None and self.checkpoint_store.has_namespace(cp):
+            loaded = self.checkpoint_store.load_namespace(cp)
+            if loaded is not None:
+                return loaded
         # Parent is a non-namespace block; synthesize {"data": <parent_df>}.
         parent_df = self._resolve_parent_output(parent_ref, outputs)
         return {"data": parent_df}

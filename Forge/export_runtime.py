@@ -222,9 +222,13 @@ class ExportRuntime:
         return [ref.frame for ref in input_refs]
 
     def _resolve_parent_namespace(self, ref: OutputRef) -> dict[str, Any]:
-        ns = ref.result.namespace
-        if ns is not None:
-            return ns
+        # Always reload from disk so each child fork gets a fresh copy. Sibling
+        # cells cannot leak mutations through a shared in-memory dict.
+        cp = ref.result.checkpoint_id
+        if cp and self.checkpoint_store.has_namespace(cp):
+            loaded = self.checkpoint_store.load_namespace(cp)
+            if loaded is not None:
+                return loaded
         return {"data": ref.frame}
 
     def _parent_history_hash(
