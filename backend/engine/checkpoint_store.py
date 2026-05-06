@@ -7,6 +7,7 @@ import re
 import shutil
 from typing import Any
 
+import dill
 import pandas as pd
 
 from backend.engine.provenance import Provenance, canonical_json
@@ -63,6 +64,7 @@ class CheckpointStore:
         provenance: Provenance,
         outputs: dict[str, pd.DataFrame] | None = None,
         images: list[Any] | None = None,
+        namespace: dict[str, Any] | None = None,
     ) -> str:
         checkpoint_id = provenance.history_hash.replace("sha256:", "")
         checkpoint_dir = self._checkpoint_dir(checkpoint_id)
@@ -87,6 +89,9 @@ class CheckpointStore:
 
         image_names = self._save_images(checkpoint_dir, checkpoint_id, images or [])
 
+        if namespace is not None:
+            self._save_namespace(checkpoint_dir, namespace)
+
         provenance.checkpoint_id = checkpoint_id
         provenance.images = image_names
         provenance_path = checkpoint_dir / "provenance.json"
@@ -99,6 +104,35 @@ class CheckpointStore:
         index_payload[provenance.history_hash] = checkpoint_id
         self._save_index(index_payload)
         return checkpoint_id
+
+    def _namespace_path(self, checkpoint_dir: Path) -> Path:
+        return checkpoint_dir / "namespace.pkl"
+
+    def _save_namespace(
+        self,
+        checkpoint_dir: Path,
+        namespace: dict[str, Any],
+    ) -> None:
+        path = self._namespace_path(checkpoint_dir)
+        if path.exists():
+            return
+        with path.open("wb") as fh:
+            dill.dump(namespace, fh, recurse=True)
+
+    def has_namespace(self, checkpoint_id: str) -> bool:
+        return self._namespace_path(self._checkpoint_dir(checkpoint_id)).exists()
+
+    def load_namespace(self, checkpoint_id: str) -> dict[str, Any] | None:
+        path = self._namespace_path(self._checkpoint_dir(checkpoint_id))
+        if not path.exists():
+            return None
+        with path.open("rb") as fh:
+            obj = dill.load(fh)
+        if not isinstance(obj, dict):
+            raise TypeError(
+                f"Checkpoint '{checkpoint_id}' namespace.pkl did not deserialize to dict."
+            )
+        return obj
 
     def _save_images(
         self,

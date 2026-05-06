@@ -443,7 +443,7 @@ def _script_steps(
                 text = note_line.strip()
                 lines.append(f"# Note: {text}" if text else "#")
 
-        expected_inputs = int(getattr(block_cls, "n_inputs", 1))
+        expected_inputs = int(block_cls.resolve_n_inputs(node.get("params") or {}))
         if len(incoming[node_id]) < expected_inputs:
             lines.extend(
                 _skip_step(

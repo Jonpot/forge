@@ -30,6 +30,8 @@ export interface BlockSpec {
   param_examples?: Record<string, unknown>;
   is_custom?: boolean;
   custom_filename?: string | null;
+  arity_input_param?: string | null;
+  arity_output_param?: string | null;
 }
 
 // ── Pipeline definition ───────────────────────────────────────────────────────

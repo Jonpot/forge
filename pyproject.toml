@@ -30,6 +30,7 @@ dependencies = [
   "mcp>=1.8",
   "uvicorn[standard]>=0.30",
   "umap-learn>=0.5",
+  "dill>=0.3.8",
 ]
 
 [project.optional-dependencies]

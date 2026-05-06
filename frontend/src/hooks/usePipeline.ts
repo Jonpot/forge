@@ -237,6 +237,61 @@ function cloneParamSchema(paramSchema: BlockParamSpec[] | undefined): BlockParam
   return (paramSchema ?? []).map((param) => ({ ...param }));
 }
 
+const DYNAMIC_ARITY_MAX = 8;
+
+function clampArity(value: unknown, fallback: number, low: number, high: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    if (typeof value === "string") {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isFinite(parsed)) {
+        return Math.max(low, Math.min(high, parsed));
+      }
+    }
+    return fallback;
+  }
+  return Math.max(low, Math.min(high, Math.trunc(value)));
+}
+
+/**
+ * Compute the effective handle counts for a node given the block spec and the
+ * node's params. For static-arity blocks (no arity_input_param /
+ * arity_output_param hints), this just returns spec defaults. For dynamic-arity
+ * blocks (FreeformCode and friends), reads the count from params.
+ */
+export function resolveNodeArity(
+  spec: Pick<BlockSpec, "n_inputs" | "input_labels" | "output_labels" | "arity_input_param" | "arity_output_param"> | undefined,
+  params: Record<string, unknown>,
+): { n_inputs: number; inputLabels: string[]; outputLabels: string[] } {
+  const fallbackNInputs = spec?.n_inputs ?? 1;
+  const fallbackInputLabels = spec?.input_labels ?? [];
+  const fallbackOutputLabels = spec?.output_labels ?? ["output"];
+
+  const inputParam = spec?.arity_input_param;
+  const outputParam = spec?.arity_output_param;
+
+  let n_inputs = fallbackNInputs;
+  if (inputParam && inputParam in params) {
+    n_inputs = clampArity(params[inputParam], fallbackNInputs, 0, DYNAMIC_ARITY_MAX);
+  }
+
+  let inputLabels = fallbackInputLabels;
+  if (inputParam) {
+    inputLabels = Array.from({ length: n_inputs }, (_, i) =>
+      fallbackInputLabels[i] ?? `in_${i}`,
+    );
+  }
+
+  let outputLabels = fallbackOutputLabels;
+  if (outputParam && outputParam in params) {
+    const n_outputs = clampArity(params[outputParam], fallbackOutputLabels.length, 1, DYNAMIC_ARITY_MAX);
+    outputLabels = Array.from({ length: n_outputs }, (_, i) =>
+      fallbackOutputLabels[i] ?? `output_${i}`,
+    );
+  }
+
+  return { n_inputs, inputLabels, outputLabels };
+}
+
 export function usePipeline() {
   const [blocks, setBlocks] = useState<BlockSpec[]>([]);
   const [nodes, setNodes] = useState<Node<ForgeNodeData>[]>([]);
@@ -280,6 +335,7 @@ export function usePipeline() {
       current.map((node) => {
         const spec = blockMap.get(String(node.data.blockKey));
         if (!spec) return node;
+        const arity = resolveNodeArity(spec, node.data.params ?? {});
         return {
           ...node,
           data: {
@@ -287,9 +343,9 @@ export function usePipeline() {
             blockName: spec.name,
             category: spec.category,
             description: spec.description ?? "",
-            n_inputs: spec.n_inputs,
-            inputLabels: spec.input_labels ?? [],
-            outputLabels: spec.output_labels ?? ["output"],
+            n_inputs: arity.n_inputs,
+            inputLabels: arity.inputLabels,
+            outputLabels: arity.outputLabels,
             paramSchema: cloneParamSchema(spec.param_schema),
             paramDescriptions: { ...(spec.param_descriptions ?? {}) },
           },
@@ -426,19 +482,28 @@ export function usePipeline() {
       const id = nextNodeId();
       const nodeState: NodeState = { status: "idle" };
       nodeStateMapRef.current.set(id, nodeState);
+      const initialParams = { ...spec.params };
+      const arity = resolveNodeArity(spec, initialParams);
+      const hasCodeParam = (spec.param_schema ?? []).some(
+        (p) => p.key === "code" || /code/i.test(p.description ?? ""),
+      );
+      const initialStyle = hasCodeParam
+        ? { width: 480, height: 320 }
+        : undefined;
       const newNode: Node<ForgeNodeData> = {
         id,
         type: "forgeBlock",
         position,
+        ...(initialStyle ? { style: initialStyle } : {}),
         data: {
           blockKey: spec.key,
           blockName: spec.name,
           category: spec.category,
           description: spec.description ?? "",
-          n_inputs: spec.n_inputs,
-          inputLabels: spec.input_labels ?? [],
-          outputLabels: spec.output_labels ?? ["output"],
-          params: { ...spec.params },
+          n_inputs: arity.n_inputs,
+          inputLabels: arity.inputLabels,
+          outputLabels: arity.outputLabels,
+          params: initialParams,
           paramSchema: cloneParamSchema(spec.param_schema),
           paramDescriptions: { ...(spec.param_descriptions ?? {}) },
           notes: null,
@@ -482,11 +547,21 @@ export function usePipeline() {
   const updateNodeParams = useCallback(
     (nodeId: string, params: Record<string, unknown>) => {
       setNodes((ns) =>
-        ns.map((n) =>
-          n.id === nodeId
-            ? { ...n, data: { ...n.data, params } }
-            : n,
-        ),
+        ns.map((n) => {
+          if (n.id !== nodeId) return n;
+          const spec = blocks.find((b) => b.key === String(n.data.blockKey));
+          const arity = resolveNodeArity(spec, params);
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              params,
+              n_inputs: arity.n_inputs,
+              inputLabels: arity.inputLabels,
+              outputLabels: arity.outputLabels,
+            },
+          };
+        }),
       );
       // Mark node and all descendants stale
       setNodes((ns) => {
@@ -501,7 +576,7 @@ export function usePipeline() {
         });
       });
     },
-    [edges],
+    [edges, blocks],
   );
 
   // ── Delete a node ───────────────────────────────────────────────────────────
@@ -707,6 +782,8 @@ export function usePipeline() {
             status: isStale ? "stale" : "idle",
           };
           nodeStateMapRef.current.set(pn.id, nodeState);
+          const loadedParams = { ...pn.params };
+          const arity = resolveNodeArity(spec, loadedParams);
           return {
             id: pn.id,
             type: "forgeBlock",
@@ -717,10 +794,10 @@ export function usePipeline() {
               blockName: spec?.name ?? pn.block,
               category: spec?.category ?? "",
               description: spec?.description ?? "",
-              n_inputs: spec?.n_inputs ?? 1,
-              inputLabels: spec?.input_labels ?? [],
-              outputLabels: spec?.output_labels ?? ["output"],
-              params: { ...pn.params },
+              n_inputs: arity.n_inputs,
+              inputLabels: arity.inputLabels,
+              outputLabels: arity.outputLabels,
+              params: loadedParams,
               paramSchema: cloneParamSchema(spec?.param_schema),
               paramDescriptions: { ...(spec?.param_descriptions ?? {}) },
               notes: pn.notes ?? null,

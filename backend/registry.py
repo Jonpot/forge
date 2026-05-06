@@ -197,6 +197,8 @@ class BlockSpec:
     param_examples: dict[str, Any]
     is_custom: bool = False
     custom_filename: str | None = None
+    arity_input_param: str | None = None
+    arity_output_param: str | None = None
 
 
 class BlockRegistry:
@@ -401,6 +403,8 @@ class BlockRegistry:
                     },
                     is_custom=is_custom,
                     custom_filename=custom_fn if isinstance(custom_fn, str) else None,
+                    arity_input_param=getattr(block_cls, "arity_input_param", None),
+                    arity_output_param=getattr(block_cls, "arity_output_param", None),
                 )
             )
         return specs

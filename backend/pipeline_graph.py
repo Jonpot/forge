@@ -59,8 +59,14 @@ def normalize_output_handle(value: str) -> str:
     return f"output_{parsed}"
 
 
-def expected_output_handles(block_cls: type[Any]) -> list[str]:
-    labels = getattr(block_cls, "output_labels", ["output"])
+def expected_output_handles(
+    block_cls: type[Any], params: dict[str, Any] | None = None
+) -> list[str]:
+    resolver = getattr(block_cls, "resolve_output_labels", None)
+    if callable(resolver):
+        labels = resolver(params)
+    else:
+        labels = getattr(block_cls, "output_labels", ["output"])
     if isinstance(labels, (list, tuple)):
         count = max(len(labels), 1)
     else:

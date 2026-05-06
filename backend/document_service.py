@@ -419,7 +419,7 @@ class DraftService:
             raise KeyError(f"Unknown target node: {target_node_id}")
 
         source_cls = self.registry.get(str(source_node["block"]))
-        valid_outputs = expected_output_handles(source_cls)
+        valid_outputs = expected_output_handles(source_cls, source_node.get("params") or {})
         source_output_handle = self._resolve_source_output_handle(source_output)
         if source_output_handle not in valid_outputs:
             raise ValueError(
@@ -889,7 +889,8 @@ class DraftService:
             block_cls = self.registry.get(str(nodes[node_id]["block"]))
             provenance = self.checkpoint_store.load_provenance(checkpoint_id)
             outputs: dict[str, Any] = {}
-            for output_handle in expected_output_handles(block_cls):
+            node_params = nodes[node_id].get("params") or {}
+            for output_handle in expected_output_handles(block_cls, node_params):
                 frame = self.checkpoint_store.load_output(checkpoint_id, output_handle)
                 outputs[output_handle] = self._preview_dataframe(frame)
 
@@ -1146,7 +1147,7 @@ class DraftService:
                         f"Node '{node_id}' is missing required param '{param_name}'."
                     )
 
-            expected_inputs = int(getattr(block_cls, "n_inputs", 1))
+            expected_inputs = int(block_cls.resolve_n_inputs(params))
             actual_inputs = len(incoming.get(node_id, []))
             if actual_inputs < expected_inputs:
                 errors.append(
@@ -1356,7 +1357,8 @@ class DraftService:
         incoming, _ = build_adjacency(pipeline)
         for node in nodes:
             block_cls = self.registry.get(str(node["block"]))
-            expected_inputs = int(getattr(block_cls, "n_inputs", 1))
+            node_params = node.get("params") or {}
+            expected_inputs = int(block_cls.resolve_n_inputs(node_params))
             node_incoming = incoming[str(node["id"])]
             if len(node_incoming) > expected_inputs:
                 raise ValueError(
@@ -1367,7 +1369,9 @@ class DraftService:
             for edge in node_incoming:
                 source_node = self._get_node_payload(pipeline, str(edge["source"]))
                 source_cls = self.registry.get(str(source_node["block"]))
-                source_outputs = set(expected_output_handles(source_cls))
+                source_outputs = set(
+                    expected_output_handles(source_cls, source_node.get("params") or {})
+                )
                 output_handle = edge_source_output_handle(edge)
                 if output_handle not in source_outputs:
                     raise ValueError(
@@ -1647,7 +1651,7 @@ class DraftService:
         requested_target_input: int | None,
     ) -> int:
         block_cls = self.registry.get(str(target_node["block"]))
-        expected_inputs = int(getattr(block_cls, "n_inputs", 1))
+        expected_inputs = int(block_cls.resolve_n_inputs(target_node.get("params") or {}))
         incoming, _ = build_adjacency(pipeline)
         target_node_id = str(target_node["id"])
         current_incoming = list(incoming[target_node_id])

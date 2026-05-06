@@ -64,6 +64,7 @@ class PipelineRunner:
         node_map, incoming, topo_order = self._prepare_graph(pipeline)
         node_results: dict[str, NodeExecutionResult] = {}
         node_outputs: dict[str, dict[str, pd.DataFrame]] = {}
+        node_namespaces: dict[str, dict[str, Any]] = {}
         node_checkpoint_ids: dict[str, str] = {}
         computed_hashes: dict[str, str] = {}
         executed_nodes: list[str] = []
@@ -87,14 +88,14 @@ class PipelineRunner:
 
             # Quick skip if the number of inputs is less than what the block expects, before even trying to figure out which parents to use.
             # Obviously, if there are less inputs than needed, it can't run and is probably not fully wired up yet
-            expected_num_inputs = getattr(block_cls, "n_inputs", 1)
+            expected_num_inputs = block_cls.resolve_n_inputs(params_payload)
             if len(incoming[node_id]) < expected_num_inputs:
                 continue
 
             parent_refs = self._sorted_parent_refs(node_id, incoming)
             # Skip if not wired up
             try:
-                self._validate_input_arity(block_cls, parent_refs, node_id)
+                self._validate_input_arity(block_cls, parent_refs, node_id, params_payload)
             except ValueError:
                 continue
 
@@ -128,10 +129,14 @@ class PipelineRunner:
                     block_cls.should_force_execute(params_payload)
                 )
                 if existing_checkpoint_id is not None and not should_force_execute:
-                    output_handles = self._expected_output_handles(block_cls)
+                    output_handles = self._expected_output_handles(block_cls, params_payload)
                     node_outputs[node_id] = self.checkpoint_store.load_outputs(
                         existing_checkpoint_id, output_handles
                     )
+                    if getattr(block_cls, "produces_namespace", False):
+                        loaded_ns = self.checkpoint_store.load_namespace(existing_checkpoint_id)
+                        if loaded_ns is not None:
+                            node_namespaces[node_id] = loaded_ns
                     node_checkpoint_ids[node_id] = existing_checkpoint_id
                     node_results[node_id] = NodeExecutionResult(
                         node_id=node_id,
@@ -153,7 +158,11 @@ class PipelineRunner:
                     continue
 
                 input_data = self._resolve_input_data(
-                    block_cls, parent_refs, node_outputs
+                    block_cls,
+                    parent_refs,
+                    node_outputs,
+                    params_payload,
+                    namespaces=node_namespaces,
                 )
                 block.validate(input_data)
 
@@ -173,7 +182,7 @@ class PipelineRunner:
                         f"Block {block_cls.__name__} returned {type(output)!r}; expected BlockOutput."
                     )
 
-                output_frames = self._normalize_output_frames(block_cls, output)
+                output_frames = self._normalize_output_frames(block_cls, output, params_payload)
                 output_df = output_frames["output_0"]
 
                 provenance = Provenance(
@@ -197,14 +206,21 @@ class PipelineRunner:
                     output_shape=[int(output_df.shape[0]), int(output_df.shape[1])],
                     images=[],
                 )
+                output_namespace: dict[str, Any] | None = None
+                if getattr(block_cls, "produces_namespace", False):
+                    output_namespace = output.namespace if output.namespace is not None else {}
+
                 checkpoint_id = self.checkpoint_store.save(
                     data=output_df,
                     provenance=provenance,
                     outputs=output_frames,
                     images=output.images,
+                    namespace=output_namespace,
                 )
 
                 node_outputs[node_id] = output_frames
+                if output_namespace is not None:
+                    node_namespaces[node_id] = output_namespace
                 node_checkpoint_ids[node_id] = checkpoint_id
                 node_results[node_id] = NodeExecutionResult(
                     node_id=node_id,
@@ -256,7 +272,8 @@ class PipelineRunner:
         for node_id in topo_order:
             node = node_map[node_id]
             block_cls = self.registry.get(node["block"])
-            expected_inputs = getattr(block_cls, "n_inputs", 1)
+            params_payload = self._params_payload(node, block_cls)
+            expected_inputs = block_cls.resolve_n_inputs(params_payload)
             parent_refs = self._sorted_parent_refs(
                 node_id,
                 incoming,
@@ -275,7 +292,7 @@ class PipelineRunner:
                 parent_history_hash,
                 block_cls.name,
                 block_cls.version,
-                self._params_payload(node, block_cls),
+                params_payload,
             )
         return computed_hashes
 
@@ -302,21 +319,49 @@ class PipelineRunner:
         block_cls: type[BaseBlock],
         parent_refs: list[ParentInputRef],
         outputs: dict[str, dict[str, pd.DataFrame]],
+        params: dict[str, Any] | None = None,
+        *,
+        namespaces: dict[str, dict[str, Any]] | None = None,
     ) -> Any:
-        n_inputs = getattr(block_cls, "n_inputs", 1)
+        n_inputs = block_cls.resolve_n_inputs(params)
         if n_inputs == 0:
             return None
+
+        if getattr(block_cls, "consumes_namespace", False):
+            ns_lookup = namespaces or {}
+            resolved = [
+                self._resolve_parent_namespace(parent_ref, outputs, ns_lookup)
+                for parent_ref in parent_refs
+            ]
+            if n_inputs == 1:
+                return resolved[0]
+            return resolved
+
         if n_inputs == 1:
             return self._resolve_parent_output(parent_refs[0], outputs)
         return [self._resolve_parent_output(parent_ref, outputs) for parent_ref in parent_refs]
+
+    def _resolve_parent_namespace(
+        self,
+        parent_ref: ParentInputRef,
+        outputs: dict[str, dict[str, pd.DataFrame]],
+        namespaces: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        existing = namespaces.get(parent_ref.source_node_id)
+        if existing is not None:
+            return existing
+        # Parent is a non-namespace block; synthesize {"data": <parent_df>}.
+        parent_df = self._resolve_parent_output(parent_ref, outputs)
+        return {"data": parent_df}
 
     def _validate_input_arity(
         self,
         block_cls: type[BaseBlock],
         parent_refs: list[ParentInputRef],
         node_id: str,
+        params: dict[str, Any] | None = None,
     ) -> None:
-        expected = getattr(block_cls, "n_inputs", 1)
+        expected = block_cls.resolve_n_inputs(params)
         if len(parent_refs) != expected:
             raise ValueError(
                 f"Node {node_id} ({block_cls.__name__}) expects {expected} inputs, "
@@ -520,20 +565,22 @@ class PipelineRunner:
             return None
         return f"output_{int(match.group(1))}"
 
-    def _expected_output_handles(self, block_cls: type[BaseBlock]) -> list[str]:
-        output_labels = getattr(block_cls, "output_labels", ["output"])
-        if isinstance(output_labels, (list, tuple)):
-            count = max(len(output_labels), 1)
-        else:
-            count = 1
+    def _expected_output_handles(
+        self,
+        block_cls: type[BaseBlock],
+        params: dict[str, Any] | None = None,
+    ) -> list[str]:
+        output_labels = block_cls.resolve_output_labels(params)
+        count = max(len(output_labels), 1)
         return [f"output_{idx}" for idx in range(count)]
 
     def _normalize_output_frames(
         self,
         block_cls: type[BaseBlock],
         output: BlockOutput,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, pd.DataFrame]:
-        expected_handles = self._expected_output_handles(block_cls)
+        expected_handles = self._expected_output_handles(block_cls, params)
         for handle in expected_handles:
             if handle not in output.outputs:
                 raise TypeError(
