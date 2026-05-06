@@ -1122,6 +1122,159 @@ class MatrixScatterPlot(VisualizationBlock):
         )
 
 
+class InteractiveMatrixScatterPlot(VisualizationBlock):
+    name = "Interactive Matrix Scatter Plot"
+    version = "1.0.0"
+    category = "Visualization"
+    description = (
+        "Render an interactive 2D scatter using Plotly. The figure is saved as "
+        "self-contained HTML so the canvas embeds a live (hover / pan / zoom) plot."
+    )
+    input_labels = ["Matrix"]
+    output_labels = ["Matrix + Image"]
+    usage_notes = [
+        "Same params as Matrix Scatter Plot, but rendered with Plotly Express. Hover to see row values.",
+        "`color_mode='auto'` treats numeric dtype columns as continuous and string/object columns as categorical.",
+        "Set `color_mode='categorical'` when cluster IDs are numeric labels but should render as a discrete legend.",
+    ]
+    presets = [
+        {
+            "id": "cluster_scatter",
+            "label": "Cluster Scatter",
+            "description": "Interactive scatter with cluster assignments encoded by color.",
+            "params": {
+                "x_column": "feature_a",
+                "y_column": "feature_b",
+                "color_column": "cluster_id",
+                "color_mode": "categorical",
+                "title": "Interactive Cluster Scatter",
+            },
+        }
+    ]
+
+    class Params(ScatterPlotParams):
+        pass
+
+    def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
+        if params is None:
+            raise BlockValidationError("InteractiveMatrixScatterPlot requires params.")
+        _require_non_empty_frame(data, "InteractiveMatrixScatterPlot")
+
+        x_column = _require_column(
+            data, params.x_column, "InteractiveMatrixScatterPlot", "x_column"
+        )
+        y_column = _require_column(
+            data, params.y_column, "InteractiveMatrixScatterPlot", "y_column"
+        )
+        color_column = str(params.color_column).strip()
+        size_column = str(params.size_column).strip()
+        if (
+            color_column
+            and color_column != "index"
+            and color_column not in data.columns
+        ):
+            raise BlockValidationError(f"Column '{color_column}' not found.")
+        if size_column and size_column not in data.columns:
+            raise BlockValidationError(f"Column '{size_column}' not found.")
+
+        plot_df = _prepare_scatter_plot_df(
+            data,
+            x_column,
+            y_column,
+            size_column,
+            float(params.marker_size),
+            "InteractiveMatrixScatterPlot",
+        )
+
+        try:
+            import plotly.express as px
+        except Exception as exc:
+            raise BlockValidationError(
+                "InteractiveMatrixScatterPlot requires plotly. Install dependencies and retry."
+            ) from exc
+
+        plot_title = _normalize_plot_title(
+            params.title, f"{y_column} vs {x_column}"
+        )
+        figure_kwargs: dict[str, Any] = {
+            "x": "_x",
+            "y": "_y",
+            "title": plot_title,
+        }
+        color_mode_used: str | None = None
+        if color_column:
+            color_mode = _normalize_color_mode(
+                str(getattr(params, "color_mode", "auto")),
+                "InteractiveMatrixScatterPlot",
+            )
+            color_group_key, color_values_raw = _resolve_color_series(
+                plot_df, color_column
+            )
+            numeric_color = pd.to_numeric(color_values_raw, errors="coerce")
+            non_null_color = color_values_raw.notna()
+            can_use_numeric_scale = bool(non_null_color.any()) and bool(
+                numeric_color[non_null_color].notna().all()
+            )
+            wants_numeric_scale = _wants_numeric_color_scale(
+                color_values_raw,
+                color_mode,
+            )
+            if color_mode == "numeric" and not can_use_numeric_scale:
+                raise BlockValidationError(
+                    f"InteractiveMatrixScatterPlot could not interpret '{color_column}' as numeric colors."
+                )
+            if wants_numeric_scale and can_use_numeric_scale:
+                plot_df["_color_numeric"] = numeric_color
+                figure_kwargs["color"] = "_color_numeric"
+                figure_kwargs["color_continuous_scale"] = str(params.cmap)
+                color_mode_used = "numeric"
+            else:
+                plot_df["_color_display"] = color_values_raw.astype("string").fillna(
+                    "null"
+                )
+                figure_kwargs["color"] = "_color_display"
+                color_mode_used = "categorical"
+        if size_column:
+            figure_kwargs["size"] = "_size"
+
+        # Hover shows the original (non-helper) columns so users can identify points.
+        hover_cols = [
+            c
+            for c in data.columns
+            if c not in {"_x", "_y", "_size", "_color_numeric", "_color_display"}
+        ]
+        if hover_cols:
+            figure_kwargs["hover_data"] = {col: True for col in hover_cols}
+
+        fig = px.scatter(plot_df, **figure_kwargs)
+        marker_update: dict[str, Any] = {"opacity": float(params.alpha)}
+        if not size_column:
+            marker_update["size"] = float(params.marker_size) ** 0.5
+        fig.update_traces(marker=marker_update)
+        fig.update_layout(
+            xaxis_title=x_column,
+            yaxis_title=y_column,
+            legend_title_text=color_column or None,
+            margin=dict(l=50, r=20, t=50, b=50),
+        )
+
+        return _visual_output(
+            data,
+            fig,
+            params,
+            plot_title,
+            metadata={
+                "x_column": x_column,
+                "y_column": y_column,
+                "color_column": color_column or None,
+                "color_mode_used": color_mode_used,
+                "size_column": size_column or None,
+                "n_rows_plotted": int(plot_df.shape[0]),
+                "interactive": True,
+            },
+        )
+
+
 class HighlightedScatterPlot(VisualizationBlock):
     name = "Highlighted Scatter Plot"
     version = "1.0.0"

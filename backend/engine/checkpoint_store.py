@@ -113,20 +113,34 @@ class CheckpointStore:
         image_dir.mkdir(exist_ok=True)
         names: list[str] = []
         for idx, image in enumerate(images):
-            name = f"image_{idx}_{checkpoint_id[:8]}.png"
-            image_path = image_dir / name
+            base = f"image_{idx}_{checkpoint_id[:8]}"
 
             if hasattr(image, "savefig"):
-                image.savefig(image_path, bbox_inches="tight")
+                # matplotlib Figure
+                name = f"{base}.png"
+                image.savefig(image_dir / name, bbox_inches="tight")
+            elif hasattr(image, "write_html"):
+                # Plotly Figure — persist as interactive HTML so the frontend
+                # can embed it in an iframe with full hover/pan/zoom support.
+                name = f"{base}.html"
+                image.write_html(  # type: ignore[call-arg]
+                    str(image_dir / name),
+                    full_html=True,
+                    include_plotlyjs=True,
+                )
             elif hasattr(image, "write_image"):
+                # Non-Plotly image emitter (rare). Fall back to PNG via kaleido.
+                name = f"{base}.png"
                 try:
-                    image.write_image(str(image_path), format="png")  # type: ignore[call-arg]
+                    image.write_image(str(image_dir / name), format="png")  # type: ignore[call-arg]
                 except Exception as exc:
                     raise TypeError(
-                        "Failed to render Plotly image artifact. Ensure 'kaleido' is installed."
+                        "Failed to render image artifact. Ensure 'kaleido' is installed."
                     ) from exc
             elif isinstance(image, (str, Path)):
-                shutil.copy2(Path(image), image_path)
+                src = Path(image)
+                name = f"{base}{src.suffix or '.png'}"
+                shutil.copy2(src, image_dir / name)
             else:
                 raise TypeError(f"Unsupported image artifact type: {type(image)!r}")
             names.append(name)

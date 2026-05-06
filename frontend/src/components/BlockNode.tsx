@@ -392,6 +392,35 @@ export const BlockNode = memo(function BlockNode({
                 ? checkpointImageUrl(checkpointId, filename)
                 : null;
               if (!url) return null;
+              const interactive = filename.toLowerCase().endsWith(".html");
+              if (interactive) {
+                // Live iframe — plotly handles hover/pan/zoom directly.
+                // The expand-to-lightbox affordance lives on a small corner
+                // button so it doesn't compete with the chart for clicks.
+                return (
+                  <div
+                    key={filename}
+                    className="
+                      nodrag nopan nowheel
+                      relative block w-full h-full rounded overflow-hidden
+                      border border-forge-border hover:border-forge-accent
+                      transition-[border-color,box-shadow] duration-150
+                      hover:shadow-md hover:shadow-forge-accent/10
+                    "
+                  >
+                    <iframe
+                      src={url}
+                      title={filename}
+                      className="block w-full h-full bg-white"
+                      style={{ border: 0 }}
+                    />
+                    <ExpandOverlayButton
+                      onClick={() => setLightboxSrc(url)}
+                      title="Expand"
+                    />
+                  </div>
+                );
+              }
               return (
                 <button
                   key={filename}
@@ -416,7 +445,9 @@ export const BlockNode = memo(function BlockNode({
                     onLoad={(e) => {
                       const img = e.currentTarget;
                       if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-                        setPrimaryImageAspect(img.naturalWidth / img.naturalHeight);
+                        setPrimaryImageAspect(
+                          img.naturalWidth / img.naturalHeight,
+                        );
                       }
                     }}
                     draggable={false}
@@ -434,6 +465,32 @@ export const BlockNode = memo(function BlockNode({
                 ? checkpointImageUrl(checkpointId, filename)
                 : null;
               if (!url) return null;
+              const interactive = filename.toLowerCase().endsWith(".html");
+              if (interactive) {
+                return (
+                  <div
+                    key={filename}
+                    className="
+                      nodrag nopan nowheel
+                      relative block w-full rounded overflow-hidden
+                      border border-forge-border hover:border-forge-accent
+                      transition-[border-color,box-shadow] duration-150
+                      hover:shadow-md hover:shadow-forge-accent/10
+                    "
+                  >
+                    <iframe
+                      src={url}
+                      title={filename}
+                      className="block w-full bg-white"
+                      style={{ height: 160, border: 0 }}
+                    />
+                    <ExpandOverlayButton
+                      onClick={() => setLightboxSrc(url)}
+                      title="Expand"
+                    />
+                  </div>
+                );
+              }
               return (
                 <button
                   key={filename}
@@ -502,6 +559,39 @@ export const BlockNode = memo(function BlockNode({
   );
 });
 
+// ── Inline expand affordance ──────────────────────────────────────────────────
+
+function ExpandOverlayButton({
+  onClick,
+  title,
+}: {
+  onClick: () => void;
+  title: string;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      className="
+        nodrag nopan nowheel
+        absolute top-1 right-1 z-10
+        w-6 h-6 flex items-center justify-center
+        rounded bg-forge-bg/80 hover:bg-forge-bg text-forge-muted hover:text-forge-text
+        border border-forge-border hover:border-forge-accent
+        text-xs leading-none
+        transition-[background-color,color,border-color] duration-150
+      "
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+    >
+      ⛶
+    </button>
+  );
+}
+
 // ── Lightbox ──────────────────────────────────────────────────────────────────
 
 function NodeLightbox({
@@ -520,6 +610,8 @@ function NodeLightbox({
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
 
+  const interactive = src.toLowerCase().endsWith(".html");
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in"
@@ -536,12 +628,21 @@ function NodeLightbox({
         >
           ✕
         </button>
-        <img
-          src={src}
-          alt="Visualization output"
-          className="max-w-[92vw] max-h-[92vh] object-contain"
-          draggable={false}
-        />
+        {interactive ? (
+          <iframe
+            src={src}
+            title="Interactive visualization"
+            className="bg-white"
+            style={{ width: "85vw", height: "85vh", border: 0 }}
+          />
+        ) : (
+          <img
+            src={src}
+            alt="Visualization output"
+            className="max-w-[92vw] max-h-[92vh] object-contain"
+            draggable={false}
+          />
+        )}
       </div>
     </div>
   );
