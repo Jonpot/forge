@@ -5,11 +5,16 @@ import {
   getStaleness,
   cancelPipelineExecution,
   createPipeline,
+  deletePipeline as apiDeletePipeline,
   prettifyPipeline as apiPrettifyPipeline,
   updatePipeline,
   getPipeline,
 } from "@/api/client";
 import { useWebSocket } from "./useWebSocket";
+import {
+  DEFAULT_COMMENT_COLOR,
+  normalizeCommentColor,
+} from "@/utils/commentColors";
 import type {
   BlockSpec,
   BlockParamSpec,
@@ -26,6 +31,7 @@ import type {
 export interface CommentNodeData extends Record<string, unknown> {
   title: string;
   description: string;
+  color?: string | null;
   managed?: boolean;
   groupId?: string | null;
 }
@@ -71,6 +77,16 @@ const DEFAULT_COMMENT_WIDTH = 300;
 const DEFAULT_COMMENT_HEIGHT = 150;
 const DEFAULT_BLOCK_WIDTH = 200;
 const DEFAULT_BLOCK_HEIGHT = 170;
+const DEFAULT_PIPELINE_FILENAME = "untitled_pipeline";
+
+function slugifyPipelineFilename(value: string): string {
+  const withoutExtension = value.trim().replace(/\.json$/i, "");
+  const cleaned = withoutExtension
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+  return cleaned || "pipeline";
+}
 
 function readNodeWidth(node: Node<ForgeNodeData>): number {
   if (typeof node.width === "number") return node.width;
@@ -159,6 +175,7 @@ function buildPipelinePayload(
       id: n.id,
       title: cd.title ?? "",
       description: cd.description ?? "",
+      color: normalizeCommentColor(typeof cd.color === "string" ? cd.color : null) ?? DEFAULT_COMMENT_COLOR,
       position: n.position,
       width: readNodeWidth(n),
       height: readNodeHeight(n),
@@ -242,6 +259,7 @@ export function usePipeline() {
   const [nodes, setNodes] = useState<Node<ForgeNodeData>[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [pipelineId, setPipelineId] = useState<string | null>(null);
+  const [pipelineFilename, setPipelineFilename] = useState(DEFAULT_PIPELINE_FILENAME);
   const [pipelineName, setPipelineName] = useState("Untitled Pipeline");
   const [groups, setGroups] = useState<PipelineGroup[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -254,8 +272,9 @@ export function usePipeline() {
   const nodeStateMapRef = useRef<Map<string, NodeState>>(new Map());
   const lastSavedSignatureRef = useRef<string>(INITIAL_PIPELINE_SIGNATURE);
   const currentSignatureRef = useRef<string>(INITIAL_PIPELINE_SIGNATURE);
+  const lastSavedFilenameRef = useRef<string>(DEFAULT_PIPELINE_FILENAME);
   const saveInFlightRef = useRef<Promise<string> | null>(null);
-  const saveInFlightSignatureRef = useRef<string | null>(null);
+  const saveInFlightKeyRef = useRef<string | null>(null);
   const activeRunPipelineIdRef = useRef<string | null>(null);
 
   // ── Block registry ──────────────────────────────────────────────────────────
@@ -304,8 +323,11 @@ export function usePipeline() {
       buildPipelinePayload(nodes, edges, pipelineName, groups),
     );
     currentSignatureRef.current = signature;
-    setIsDirty(signature !== lastSavedSignatureRef.current);
-  }, [nodes, edges, pipelineName, groups]);
+    setIsDirty(
+      signature !== lastSavedSignatureRef.current ||
+      pipelineFilename !== lastSavedFilenameRef.current,
+    );
+  }, [nodes, edges, pipelineName, groups, pipelineFilename]);
 
   // ── Node state helpers ──────────────────────────────────────────────────────
 
@@ -466,6 +488,7 @@ export function usePipeline() {
         data: {
           title: "",
           description: "",
+          color: DEFAULT_COMMENT_COLOR,
           managed: false,
           groupId: id,
         } as CommentNodeData,
@@ -555,15 +578,23 @@ export function usePipeline() {
     [],
   );
 
+  const normalizePipelineFilenameDraft = useCallback(() => {
+    setPipelineFilename((current) => slugifyPipelineFilename(current));
+  }, []);
+
   // ── Persist pipeline ─────────────────────────────────────────────────────────
 
   const persistCurrentPipeline = useCallback(async () => {
     const payload = buildPipelinePayload(nodes, edges, pipelineName, groups);
     const signature = payloadSignature(payload);
+    const requestedPipelineId = slugifyPipelineFilename(
+      pipelineFilename || pipelineId || pipelineName || DEFAULT_PIPELINE_FILENAME,
+    );
+    const saveKey = `${signature}::${requestedPipelineId}`;
 
     if (
       saveInFlightRef.current &&
-      saveInFlightSignatureRef.current === signature
+      saveInFlightKeyRef.current === saveKey
     ) {
       return await saveInFlightRef.current;
     }
@@ -572,31 +603,58 @@ export function usePipeline() {
     }
 
     const savePromise = (async () => {
-      if (pipelineId) {
+      if (pipelineId && requestedPipelineId === pipelineId) {
         const env = await updatePipeline(pipelineId, payload);
         setPipelineId(env.id);
+        setPipelineFilename(env.id);
         lastSavedSignatureRef.current = signature;
-        setIsDirty(currentSignatureRef.current !== signature);
+        lastSavedFilenameRef.current = env.id;
+        setIsDirty(
+          currentSignatureRef.current !== signature ||
+          requestedPipelineId !== env.id,
+        );
         return env.id;
       }
-      const env = await createPipeline(payload);
+      if (pipelineId && requestedPipelineId !== pipelineId) {
+        const env = await createPipeline(payload, requestedPipelineId);
+        try {
+          await apiDeletePipeline(pipelineId);
+        } catch (error: unknown) {
+          console.warn("Renamed pipeline but failed to delete previous file", error);
+        }
+        setPipelineId(env.id);
+        setPipelineFilename(env.id);
+        lastSavedSignatureRef.current = signature;
+        lastSavedFilenameRef.current = env.id;
+        setIsDirty(
+          currentSignatureRef.current !== signature ||
+          requestedPipelineId !== env.id,
+        );
+        return env.id;
+      }
+      const env = await createPipeline(payload, requestedPipelineId);
       setPipelineId(env.id);
+      setPipelineFilename(env.id);
       lastSavedSignatureRef.current = signature;
-      setIsDirty(currentSignatureRef.current !== signature);
+      lastSavedFilenameRef.current = env.id;
+      setIsDirty(
+        currentSignatureRef.current !== signature ||
+        requestedPipelineId !== env.id,
+      );
       return env.id;
     })();
 
     saveInFlightRef.current = savePromise;
-    saveInFlightSignatureRef.current = signature;
+    saveInFlightKeyRef.current = saveKey;
     try {
       return await savePromise;
     } finally {
       if (saveInFlightRef.current === savePromise) {
         saveInFlightRef.current = null;
-        saveInFlightSignatureRef.current = null;
+        saveInFlightKeyRef.current = null;
       }
     }
-  }, [nodes, edges, pipelineName, pipelineId, groups]);
+  }, [nodes, edges, pipelineName, pipelineId, pipelineFilename, groups]);
 
   // ── Run pipeline via WebSocket ──────────────────────────────────────────────
 
@@ -663,6 +721,7 @@ export function usePipeline() {
       const env = await getPipeline(id);
       const { pipeline } = env;
       setPipelineId(env.id);
+      setPipelineFilename(env.id);
       setPipelineName(pipeline.name);
       setGroups(pipeline.groups ?? []);
 
@@ -754,6 +813,7 @@ export function usePipeline() {
         data: {
           title: c.title,
           description: c.description,
+          color: normalizeCommentColor(c.color) ?? DEFAULT_COMMENT_COLOR,
           managed: c.managed ?? false,
           groupId: c.group_id ?? c.id,
         } as CommentNodeData,
@@ -774,6 +834,7 @@ export function usePipeline() {
       );
       lastSavedSignatureRef.current = loadedSignature;
       currentSignatureRef.current = loadedSignature;
+      lastSavedFilenameRef.current = env.id;
       setIsDirty(false);
 
       setNodes(loadedNodes);
@@ -797,6 +858,7 @@ export function usePipeline() {
     setNodes([]);
     setEdges([]);
     setPipelineId(null);
+    setPipelineFilename(DEFAULT_PIPELINE_FILENAME);
     setPipelineName("Untitled Pipeline");
     setGroups([]);
     setSelectedNodeId(null);
@@ -806,6 +868,7 @@ export function usePipeline() {
     activeRunPipelineIdRef.current = null;
     lastSavedSignatureRef.current = INITIAL_PIPELINE_SIGNATURE;
     currentSignatureRef.current = INITIAL_PIPELINE_SIGNATURE;
+    lastSavedFilenameRef.current = DEFAULT_PIPELINE_FILENAME;
     setIsDirty(false);
   }, []);
 
@@ -856,9 +919,12 @@ export function usePipeline() {
     edges,
     setEdges,
     pipelineId,
+    pipelineFilename,
     pipelineName,
     groups,
     setPipelineName,
+    setPipelineFilename,
+    normalizePipelineFilenameDraft,
     setGroups,
     selectedNodeId,
     setSelectedNodeId,

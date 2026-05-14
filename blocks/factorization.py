@@ -11,6 +11,7 @@ from backend.block import (
     BlockOutput,
     BlockParams,
     BlockValidationError,
+    InsufficientInputs,
     ProgressBar,
 )
 
@@ -417,6 +418,10 @@ class WeightedALSFactorization(BaseBlock):
         seed: int = 0
         output_prefix: str = "program_"
 
+    def validate(self, data: Any) -> None:
+        if not isinstance(data, list) or len(data) < 2 or any(d is None for d in data[:2]):
+            raise InsufficientInputs("WeightedALSFactorization requires both inputs.")
+
     def execute(
         self, data: list[pd.DataFrame], params: Params | None = None
     ) -> BlockOutput:
@@ -489,6 +494,10 @@ class NuisanceALSSweep(BaseBlock):
         step_prefix: str = "Step"
         validate_column_keys: bool = True
         holdout_strategy: str = "group_block"
+
+    def validate(self, data: Any) -> None:
+        if not isinstance(data, list) or len(data) < 2 or any(d is None for d in data[:2]):
+            raise InsufficientInputs("NuisanceALSSweep requires both inputs.")
 
     def execute(
         self, data: list[pd.DataFrame], params: Params | None = None
@@ -699,6 +708,10 @@ class NuisanceALS(BaseBlock):
         payload.pop("k", None)
         payload.pop("lambda_value", None)
         return payload
+
+    def validate(self, data: Any) -> None:
+        if not isinstance(data, list) or len(data) < 4 or any(d is None for d in data[:4]):
+            raise InsufficientInputs("NuisanceALS requires all four inputs.")
 
     def execute(
         self, data: list[pd.DataFrame], params: Params | None = None

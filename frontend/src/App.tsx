@@ -24,8 +24,10 @@ import {
   type CustomBlockEntry,
 } from "./api/client";
 import { BlockPalette } from "./components/BlockPalette";
+import { BlockPickerMenu } from "./components/BlockPickerMenu";
 import { Canvas } from "./components/Canvas";
 import { NodeInspector } from "./components/NodeInspector";
+import { PendingEdgeOverlay } from "./components/PendingEdgeOverlay";
 import { OnboardingTour } from "./components/OnboardingTour";
 import { OnboardingWelcome } from "./components/OnboardingWelcome";
 import { PluginManagerModal } from "./components/PluginManagerModal";
@@ -156,8 +158,11 @@ export default function App() {
     edges,
     setEdges,
     pipelineId,
+    pipelineFilename,
     pipelineName,
     setPipelineName,
+    setPipelineFilename,
+    normalizePipelineFilenameDraft,
     selectedNodeId,
     setSelectedNodeId,
     isRunning,
@@ -630,6 +635,16 @@ export default function App() {
   // Track which block spec is being dragged from the palette
   const [draggingSpec, setDraggingSpec] = useState<BlockSpec | null>(null);
   const [draggingComment, setDraggingComment] = useState(false);
+
+  // When an edge drag is released on empty canvas space, we open a block
+  // picker at that point so the user can spawn a new block + auto-connect.
+  const [pendingConnection, setPendingConnection] = useState<{
+    sourceNodeId: string;
+    sourceHandle: string | null;
+    screenPos: { x: number; y: number };
+    flowPos: { x: number; y: number };
+    sourceScreenPos: { x: number; y: number } | null;
+  } | null>(null);
   const historyRef = useRef<GraphSnapshot[]>([]);
   const lastHistorySignatureRef = useRef<string | null>(null);
   const isApplyingUndoRef = useRef(false);
@@ -776,6 +791,57 @@ export default function App() {
       deleteNode(nodeId);
     },
     [deleteNode, pushHistorySnapshot],
+  );
+
+  // Edge dragged onto empty canvas → open block picker
+  const handleConnectEndOnPane = useCallback(
+    (
+      sourceNodeId: string,
+      sourceHandle: string | null,
+      screenPos: { x: number; y: number },
+      flowPos: { x: number; y: number },
+      sourceScreenPos: { x: number; y: number } | null,
+    ) => {
+      setPendingConnection({
+        sourceNodeId,
+        sourceHandle,
+        screenPos,
+        flowPos,
+        sourceScreenPos,
+      });
+    },
+    [],
+  );
+
+  // Only blocks with at least one input can be the target of the auto-edge.
+  const connectableBlocks = useMemo(
+    () => blocks.filter((spec) => spec.n_inputs >= 1),
+    [blocks],
+  );
+
+  const handlePickConnectionTarget = useCallback(
+    (spec: BlockSpec) => {
+      if (!pendingConnection) return;
+      pushHistorySnapshot();
+      const newNodeId = addNode(spec, pendingConnection.flowPos);
+      setEdges((es) =>
+        addEdge(
+          {
+            id: `e_${pendingConnection.sourceNodeId}_${newNodeId}_${Date.now()}`,
+            source: pendingConnection.sourceNodeId,
+            sourceHandle: pendingConnection.sourceHandle ?? undefined,
+            target: newNodeId,
+            targetHandle: "input_0",
+            type: "smoothstep",
+            animated: false,
+          },
+          es,
+        ),
+      );
+      setSelectedNodeId(newNodeId);
+      setPendingConnection(null);
+    },
+    [pendingConnection, pushHistorySnapshot, addNode, setEdges, setSelectedNodeId],
   );
 
   useEffect(() => {
@@ -959,6 +1025,7 @@ export default function App() {
       <Toolbar
         pipelineName={pipelineName}
         pipelineId={pipelineId}
+        pipelineFilename={pipelineFilename}
         customCategories={customCategories}
         appUpdate={availableUpdate ? {
           version: availableUpdate.version,
@@ -970,6 +1037,8 @@ export default function App() {
         isDirty={isDirty}
         runError={exportError ?? runError}
         onNameChange={setPipelineName}
+        onFilenameChange={setPipelineFilename}
+        onFilenameBlur={normalizePipelineFilenameDraft}
         onSave={savePipeline}
         onPrettify={prettifyPipeline}
         onLoad={handleLoadPipeline}
@@ -1025,6 +1094,7 @@ export default function App() {
           onDropBlock={handleDropBlock}
           onDropComment={handleDropComment}
           onDropBlockFile={handleDropBlockFile}
+          onConnectEndOnPane={handleConnectEndOnPane}
           draggingSpec={draggingSpec}
           draggingComment={draggingComment}
           onCanvasReady={(instance, wrapper) => {
@@ -1107,6 +1177,24 @@ export default function App() {
           state={installState}
           onClose={() => setInstallState({ phase: "idle" })}
           onResolveConflict={(file, resolution) => void runInstall(file, resolution)}
+        />
+      )}
+
+      {/* "Add block from edge" picker — opens when an edge is dragged onto
+          empty canvas space. Picking a block spawns it at the drop point and
+          auto-connects the dangling edge to its first input. */}
+      {pendingConnection && pendingConnection.sourceScreenPos && (
+        <PendingEdgeOverlay
+          source={pendingConnection.sourceScreenPos}
+          target={pendingConnection.screenPos}
+        />
+      )}
+      {pendingConnection && (
+        <BlockPickerMenu
+          blocks={connectableBlocks}
+          position={pendingConnection.screenPos}
+          onSelect={handlePickConnectionTarget}
+          onClose={() => setPendingConnection(null)}
         />
       )}
     </div>

@@ -13,6 +13,7 @@ from backend.block import (
     BlockOutput,
     BlockParams,
     BlockValidationError,
+    InsufficientInputs,
     block_param,
 )
 
@@ -447,6 +448,10 @@ class GroupMeanByAssignments(BaseBlock):
             example="cluster_id",
         )
 
+    def validate(self, data: Any) -> None:
+        if not isinstance(data, list) or len(data) < 2 or any(d is None for d in data[:2]):
+            raise InsufficientInputs("GroupMeanByAssignments requires both inputs.")
+
     def execute(
         self, data: list[pd.DataFrame], params: Params | None = None
     ) -> BlockOutput:
@@ -597,6 +602,10 @@ class AlignToReferenceMatrix(BaseBlock):
     class Params(BlockParams):
         fill_value: float = 0.0
 
+    def validate(self, data: Any) -> None:
+        if not isinstance(data, list) or len(data) < 2 or any(d is None for d in data[:2]):
+            raise InsufficientInputs("AlignToReferenceMatrix requires both inputs.")
+
     def execute(
         self, data: list[pd.DataFrame], params: Params | None = None
     ) -> BlockOutput:
@@ -630,6 +639,10 @@ class MaskByReferenceObserved(BaseBlock):
 
     class Params(BlockParams):
         fill_value: float = 0.0
+
+    def validate(self, data: Any) -> None:
+        if not isinstance(data, list) or len(data) < 2 or any(d is None for d in data[:2]):
+            raise InsufficientInputs("MaskByReferenceObserved requires both inputs.")
 
     def execute(
         self, data: list[pd.DataFrame], params: Params | None = None

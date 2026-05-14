@@ -64,6 +64,7 @@ export interface CommentItem {
   id: string;
   title: string;
   description: string;
+  color?: string | null;
   position: NodePosition;
   width: number;
   height: number;

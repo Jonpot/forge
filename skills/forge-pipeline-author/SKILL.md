@@ -11,6 +11,8 @@ Author Forge pipelines through the draft and MCP layer instead of ad hoc JSON ed
 
 1. Build context before mutating.
    - Open or inspect the relevant draft or pipeline first.
+   - On any pipeline with more than ~10 nodes or non-trivial grouping, call `render_pipeline_mermaid()` immediately after opening. This returns only the highest-level chunk DAG: root-most non-empty groups become top-level chunks, clear ungrouped scaffolding is absorbed into its strongest neighboring chunk, and ambiguous orphan regions stay explicit.
+   - When you need to drill in, call `inspect_group(target_group=...)` on a returned chunk id. This gives you a small child list plus a next-level Mermaid for just that scope. Repeat recursively instead of asking for the whole graph at once.
    - Read `describe_pipeline_spec` before using `add_block`, `apply_pipeline_spec`, or `batch_upsert_graph` when the payload shape is not already obvious.
    - Read block contracts with `describe_block_type` before setting params.
    - Prefer `describe_block_type` output, especially `param_schema`, `required_params`, `param_examples`, `presets`, and `usage_notes`, over opening block source.
@@ -25,6 +27,7 @@ Author Forge pipelines through the draft and MCP layer instead of ad hoc JSON ed
    - Target at least 90% grouped coverage for non-trivial pipelines.
    - Target 100% grouped coverage when authoring from scratch unless the user explicitly wants a rough sketch.
    - Use short, concrete group names. Avoid catch-all names like `misc` or `processing`.
+   - Use `add_comment(title, member_ids=[...])` to place manual annotation boxes around a specific set of block nodes and/or existing comment blocks. Pass `member_ids` and the tool computes the bounding box automatically; avoid raw coordinate inputs. Use this for cross-group callouts, phased sub-annotations, or any label that should not be auto-managed by `prettify`.
 4. Use context to shape the graph.
    - Infer stage boundaries from the user goal, input/output files, and expected artifacts.
    - Put side-effect blocks such as exports in terminal groups.
@@ -48,6 +51,8 @@ Author Forge pipelines through the draft and MCP layer instead of ad hoc JSON ed
 - `describe_block_type.param_schema` is field-backed. Trust `required=true` there over any old habit of interpreting blank-string defaults.
 - Use `target_input` explicitly for multi-input blocks unless you intentionally want Forge to choose the next open slot.
 - For scatter plots where cluster IDs are numeric labels, set `color_mode="categorical"` instead of inventing a workaround column.
+- `render_pipeline_mermaid` is intentionally minimal now: it returns only Mermaid. Use `inspect_group` to drill into one scope at a time, and `inspect_block` once you reach node-level children.
+- `add_comment` with `member_ids` creates a **manual** (non-managed) comment block and will not be repositioned by `prettify`. If you want a comment block that stays anchored to a group's nodes through layout changes, create a group and let `prettify` manage its comment instead.
 
 ## Quality Bar
 

@@ -10,6 +10,7 @@ from backend.block import (
     BlockOutput,
     BlockParams,
     BlockValidationError,
+    InsufficientInputs,
     block_param,
 )
 
@@ -90,6 +91,11 @@ class _BinaryColumnOperatorMixin:
     n_inputs = 2
     input_labels = ["Input 1 DataFrame or Scalar", "Input 2 DataFrame or Scalar"]
     output_labels = ["DataFrame"]
+
+    def validate(self, data: Any) -> None:
+        if not isinstance(data, list) or len(data) < 2 or any(d is None for d in data[:2]):
+            raise InsufficientInputs(f"{self.__class__.__name__} requires both inputs.")
+
     param_descriptions = {
         "input_1_column_name": "One or more Input 1 columns (comma-separated), optional when Input 1 is scalar or has one column.",
         "input_2_column_name": "One or more Input 2 columns (comma-separated), optional when Input 2 is scalar or has one column.",
@@ -381,6 +387,10 @@ class MultiplyDataFrames(BaseBlock):
     n_inputs = 2
     input_labels = ["DataFrame 1", "DataFrame 2"]
     output_labels = ["Product DataFrame"]
+
+    def validate(self, data: Any) -> None:
+        if not isinstance(data, list) or len(data) < 2 or any(d is None for d in data[:2]):
+            raise InsufficientInputs("MultiplyDataFrames requires both inputs.")
 
     def execute(self, data: list[pd.DataFrame], params: None = None) -> BlockOutput:
         if not isinstance(data, list) or len(data) != 2:

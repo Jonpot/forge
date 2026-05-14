@@ -34,7 +34,7 @@ Weak examples:
 Build context before editing:
 
 1. Confirm the target draft or pipeline.
-2. Inspect the current graph if it already exists.
+2. Inspect the current graph if it already exists. For pipelines with more than ~10 nodes, call `render_pipeline_mermaid()` first to get the top-level structural chunk DAG, then drill into the relevant chunk with `inspect_group(target_group=...)`.
 3. Read block schemas for every block whose params will be set or changed.
 4. Identify root inputs, side effects, terminal outputs, and visualization branches.
 5. Infer stage boundaries from the user goal and expected artifacts.
@@ -42,14 +42,15 @@ Build context before editing:
 ## Authoring Sequence
 
 1. Open or create the draft.
-2. Inspect pipeline state.
+2. Inspect pipeline state. For non-trivial existing pipelines, run `render_pipeline_mermaid()` to orient on chunk topology before editing.
 3. Read relevant block schemas and presets.
 4. Apply graph edits, preferably through `apply_pipeline_spec` or `batch_upsert_graph`.
 5. Assign groups with `set_groups` or `batch_group_membership`.
 6. Run `validate_draft`.
 7. Run `prettify` after structure stabilizes.
-8. Save or run the draft.
-9. Inspect key outputs and artifacts.
+8. Optionally add manual annotations with `add_comment(member_ids=[...])` for callouts that should not be managed by prettify.
+9. Save or run the draft.
+10. Inspect key outputs and artifacts.
 
 ## Handoff Checklist
 

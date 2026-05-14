@@ -10,6 +10,43 @@ import {
   serializeCategoryStyleOverrides,
   type CategoryStyleOverride,
 } from "@/utils/categoryStyles";
+import { FORGE_VERSION, resolveAppVersion } from "@/utils/version";
+
+interface AvailableAppUpdate {
+  currentVersion: string;
+  version: string;
+  publishedAt: string | null;
+  releaseUrl: string;
+  action: "auto-install" | "open-installer" | "open-release-page";
+  assetName: string | null;
+}
+
+interface InstallAppUpdateResult {
+  version: string;
+  action: AvailableAppUpdate["action"];
+  assetName: string | null;
+}
+
+function buildInstallConfirmation(update: AvailableAppUpdate): string {
+  if (update.action === "auto-install") {
+    return (
+      `Download and install Forge ${update.version} now?\n\n` +
+      "Forge will close, run the installer, and reopen when the update finishes.\n" +
+      "Any unsaved changes will be lost."
+    );
+  }
+  if (update.action === "open-installer") {
+    return (
+      `Download the Forge ${update.version} installer now?\n\n` +
+      "Forge will open the downloaded installer when it finishes.\n" +
+      "Any unsaved changes you have right now should be saved first."
+    );
+  }
+  return (
+    `Open the Forge ${update.version} release page now?\n\n` +
+    "Any unsaved changes you have right now should be saved first."
+  );
+}
 
 function detectTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -45,6 +82,17 @@ export function SettingsModal({
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [updating, setUpdating] = useState(false);
+
+  // App version + update state
+  const [appVersion, setAppVersion] = useState<string>(FORGE_VERSION);
+  const [checkingForUpdate, setCheckingForUpdate] = useState(false);
+  const [updateCheckResult, setUpdateCheckResult] = useState<
+    | { kind: "idle" }
+    | { kind: "up-to-date"; checkedAt: number }
+    | { kind: "available"; update: AvailableAppUpdate }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+  const [installingAppUpdate, setInstallingAppUpdate] = useState(false);
 
   // MCP config state
   const [mcpConfig, setMcpConfig] = useState<McpConfigResponse | null>(null);
@@ -94,6 +142,26 @@ export function SettingsModal({
       .then((cfg) => setMcpConfig(cfg))
       .catch(() => setMcpError("Could not load MCP config. Is the backend running?"))
       .finally(() => setMcpLoading(false));
+  }, [open]);
+
+  // Resolve the running app version when the modal opens
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void resolveAppVersion().then((v) => {
+      if (!cancelled) setAppVersion(v);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  // Reset transient update-check state each time the modal closes
+  useEffect(() => {
+    if (open) return;
+    setUpdateCheckResult({ kind: "idle" });
+    setCheckingForUpdate(false);
+    setInstallingAppUpdate(false);
   }, [open]);
 
   // Close on Escape
@@ -236,6 +304,51 @@ export function SettingsModal({
       );
     } finally {
       setUpdating(false);
+    }
+  };
+
+  const handleCheckForAppUpdate = async () => {
+    if (!isTauri || checkingForUpdate) return;
+    setCheckingForUpdate(true);
+    setUpdateCheckResult({ kind: "idle" });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<AvailableAppUpdate | null>("check_app_update");
+      if (result) {
+        setUpdateCheckResult({ kind: "available", update: result });
+      } else {
+        setUpdateCheckResult({ kind: "up-to-date", checkedAt: Date.now() });
+      }
+    } catch (err) {
+      setUpdateCheckResult({
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setCheckingForUpdate(false);
+    }
+  };
+
+  const handleInstallAppUpdate = async (update: AvailableAppUpdate) => {
+    if (!isTauri || installingAppUpdate) return;
+    if (!window.confirm(buildInstallConfirmation(update))) return;
+    setInstallingAppUpdate(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<InstallAppUpdateResult>("install_app_update");
+      if (result.action === "auto-install") {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().close();
+        return;
+      }
+      // For open-installer / open-release-page, the OS now owns the next step.
+    } catch (err) {
+      setUpdateCheckResult({
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setInstallingAppUpdate(false);
     }
   };
 
@@ -537,6 +650,90 @@ export function SettingsModal({
               </div>
             </>
           )}
+
+          {/* Divider before About section */}
+          <div className="border-t border-forge-border/50" />
+
+          {/* About / Updates */}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-forge-text">
+              About Forge
+            </label>
+            <div className="rounded border border-forge-border/50 bg-forge-bg/50 px-4 py-3 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm text-forge-text">
+                    Forge{" "}
+                    <span className="font-mono text-forge-muted">
+                      v{appVersion}
+                    </span>
+                  </p>
+                  <p className="text-xs text-forge-muted">
+                    {isTauri
+                      ? "Check GitHub Releases for newer Forge desktop builds."
+                      : "Update checks are only available in the desktop app."}
+                  </p>
+                </div>
+                {isTauri && (
+                  <button
+                    onClick={() => { void handleCheckForAppUpdate(); }}
+                    disabled={checkingForUpdate || installingAppUpdate}
+                    className="flex-shrink-0 px-3 py-1.5 rounded text-sm text-forge-text bg-forge-border/40 hover:bg-forge-border/60 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {checkingForUpdate ? "Checking..." : "Check for updates"}
+                  </button>
+                )}
+              </div>
+
+              {isTauri && updateCheckResult.kind === "up-to-date" && (
+                <p className="text-xs text-forge-complete">
+                  &#x2713; You&apos;re on the latest version.
+                </p>
+              )}
+
+              {isTauri && updateCheckResult.kind === "available" && (
+                <div className="space-y-2">
+                  <p className="text-xs text-forge-text">
+                    <span className="font-medium">
+                      Forge {updateCheckResult.update.version}
+                    </span>{" "}
+                    is available.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => {
+                        void handleInstallAppUpdate(updateCheckResult.update);
+                      }}
+                      disabled={installingAppUpdate}
+                      className="px-3 py-1.5 rounded text-sm font-medium text-white bg-forge-accent hover:bg-forge-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {installingAppUpdate
+                        ? "Installing..."
+                        : updateCheckResult.update.action === "auto-install"
+                          ? `Install ${updateCheckResult.update.version}`
+                          : updateCheckResult.update.action === "open-installer"
+                            ? "Download installer"
+                            : "Open release page"}
+                    </button>
+                    <a
+                      href={updateCheckResult.update.releaseUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-forge-muted hover:text-forge-text underline underline-offset-2"
+                    >
+                      Release notes
+                    </a>
+                  </div>
+                </div>
+              )}
+
+              {isTauri && updateCheckResult.kind === "error" && (
+                <p className="text-xs text-forge-error">
+                  {updateCheckResult.message}
+                </p>
+              )}
+            </div>
+          </div>
 
           {/* Divider before MCP section */}
           <div className="border-t border-forge-border/50" />

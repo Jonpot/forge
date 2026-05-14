@@ -7,6 +7,7 @@ from backend.block import (
     BlockOutput,
     BlockParams,
     BlockValidationError,
+    InsufficientInputs,
     block_param,
 )
 
@@ -24,8 +25,8 @@ class AppendDatasets(BaseBlock):
         ignore_index: bool = block_param(True, description="Whether to reindex appended rows from 0..n-1.")
 
     def validate(self, data) -> None:
-        if not isinstance(data, list) or len(data) != 2:
-            raise BlockValidationError("AppendDatasets requires exactly two inputs.")
+        if not isinstance(data, list) or len(data) < 2 or any(d is None for d in data[:2]):
+            raise InsufficientInputs("AppendDatasets requires both inputs.")
 
     def execute(
         self, data: list[pd.DataFrame], params: Params | None = None
@@ -62,8 +63,8 @@ class MergeDatasets(BaseBlock):
         )
 
     def validate(self, data) -> None:
-        if not isinstance(data, list) or len(data) != 2:
-            raise BlockValidationError("MergeDatasets requires exactly two inputs.")
+        if not isinstance(data, list) or len(data) < 2 or any(d is None for d in data[:2]):
+            raise InsufficientInputs("MergeDatasets requires both inputs.")
 
     def execute(
         self, data: list[pd.DataFrame], params: Params | None = None

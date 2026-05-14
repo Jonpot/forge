@@ -11,7 +11,13 @@ import re
 import pandas as pd
 from pydantic import ValidationError
 
-from backend.block import BaseBlock, BlockOutput, BlockParams, BlockValidationError
+from backend.block import (
+    BaseBlock,
+    BlockOutput,
+    BlockParams,
+    BlockValidationError,
+    InsufficientInputs,
+)
 from backend.engine.checkpoint_store import CheckpointStore
 from backend.engine.provenance import (
     Provenance,
@@ -85,22 +91,21 @@ class PipelineRunner:
             params_payload = self._params_payload(node, block_cls)
             params_obj = self._instantiate_params(block_cls, params_payload)
 
-            # Quick skip if the number of inputs is less than what the block expects, before even trying to figure out which parents to use.
-            # Obviously, if there are less inputs than needed, it can't run and is probably not fully wired up yet
             expected_num_inputs = getattr(block_cls, "n_inputs", 1)
-            if len(incoming[node_id]) < expected_num_inputs:
+            parent_refs = self._sorted_parent_refs(
+                node_id, incoming, expected_slots=expected_num_inputs
+            )
+            connected_refs = [ref for ref in parent_refs if ref is not None]
+
+            # Skip source-less non-source blocks before emitting any events.
+            # Blocks with at least one connected input proceed and decide for
+            # themselves (via InsufficientInputs) whether they can run.
+            if expected_num_inputs > 0 and not connected_refs:
                 continue
 
-            parent_refs = self._sorted_parent_refs(node_id, incoming)
-            # Skip if not wired up
-            try:
-                self._validate_input_arity(block_cls, parent_refs, node_id)
-            except ValueError:
-                continue
-
-            # Also skip if parents weren't executed and this block doesn't accept missing inputs
-            if parent_refs and not all(
-                ref.source_node_id in node_outputs for ref in parent_refs
+            # Skip if any connected parent didn't produce output (was itself skipped).
+            if connected_refs and not all(
+                ref.source_node_id in node_outputs for ref in connected_refs
             ):
                 continue
 
@@ -184,6 +189,7 @@ class PipelineRunner:
                     parent_checkpoint_ids=[
                         node_checkpoint_ids[parent.source_node_id]
                         for parent in parent_refs
+                        if parent is not None
                     ],
                     initial_data_signature=parent_history_hash
                     if not parent_refs
@@ -223,6 +229,17 @@ class PipelineRunner:
                             "checkpoint_id": checkpoint_id,
                         }
                     )
+            except InsufficientInputs:
+                # Block signalled that its inputs aren't ready — skip silently.
+                if event_callback is not None:
+                    event_callback(
+                        {
+                            "type": "node_status",
+                            "node_id": node_id,
+                            "status": "skipped",
+                        }
+                    )
+                continue
             except Exception as exc:
                 if event_callback is not None:
                     event_callback(
@@ -262,10 +279,11 @@ class PipelineRunner:
                 incoming,
                 expected_slots=expected_inputs,
             )
-            if len(parent_refs) < expected_inputs:
+            connected_refs = [ref for ref in parent_refs if ref is not None]
+            if expected_inputs > 0 and not connected_refs:
                 continue
-            if parent_refs and not all(
-                parent.source_node_id in computed_hashes for parent in parent_refs
+            if connected_refs and not all(
+                parent.source_node_id in computed_hashes for parent in connected_refs
             ):
                 continue
             parent_history_hash = self._parent_history_hash(
@@ -282,10 +300,11 @@ class PipelineRunner:
     def _parent_history_hash(
         self,
         node: dict[str, Any],
-        parent_refs: list[ParentInputRef],
+        parent_refs: list[ParentInputRef | None],
         computed_hashes: dict[str, str],
     ) -> str:
-        if not parent_refs:
+        connected = [ref for ref in parent_refs if ref is not None]
+        if not connected:
             return self._compute_initial_signature(node)
         return combine_parent_history_hashes(
             [
@@ -293,22 +312,29 @@ class PipelineRunner:
                     computed_hashes[parent.source_node_id],
                     parent.source_output_handle,
                 )
-                for parent in parent_refs
+                for parent in connected
             ]
         )
 
     def _resolve_input_data(
         self,
         block_cls: type[BaseBlock],
-        parent_refs: list[ParentInputRef],
+        parent_refs: list[ParentInputRef | None],
         outputs: dict[str, dict[str, pd.DataFrame]],
     ) -> Any:
         n_inputs = getattr(block_cls, "n_inputs", 1)
         if n_inputs == 0:
             return None
         if n_inputs == 1:
-            return self._resolve_parent_output(parent_refs[0], outputs)
-        return [self._resolve_parent_output(parent_ref, outputs) for parent_ref in parent_refs]
+            ref = parent_refs[0] if parent_refs else None
+            return (
+                self._resolve_parent_output(ref, outputs) if ref is not None else None
+            )
+        # Multi-input: return a list of length n_inputs with None for disconnected slots.
+        return [
+            self._resolve_parent_output(ref, outputs) if ref is not None else None
+            for ref in parent_refs
+        ]
 
     def _validate_input_arity(
         self,
@@ -441,12 +467,21 @@ class PipelineRunner:
         incoming: dict[str, list[ParentInputRef]],
         *,
         expected_slots: int | None = None,
-    ) -> list[ParentInputRef]:
+    ) -> list[ParentInputRef | None]:
+        """Return an ordered list of parent refs, one entry per input slot.
+
+        When expected_slots > len(edges), trailing slots are None — those
+        represent optional inputs that are not currently connected.  Callers
+        should filter out None entries before checking whether parent nodes
+        have run, and should pass None to the block so it can decide via
+        InsufficientInputs whether it can proceed.
+        """
         edges = sorted(incoming[node_id], key=lambda item: item.edge_index)
-        if not edges:
-            return []
 
         slot_count = max(len(edges), expected_slots or 0)
+        if slot_count == 0:
+            return []
+
         slots: list[ParentInputRef | None] = [None] * slot_count
         unresolved: list[ParentInputRef] = []
 
@@ -455,10 +490,10 @@ class PipelineRunner:
                 unresolved.append(edge)
                 continue
 
-            if edge.target_input < 0 or edge.target_input >= len(slots):
+            if edge.target_input < 0 or edge.target_input >= slot_count:
                 raise ValueError(
                     f"Node {node_id} has edge from '{edge.source_node_id}' targeting input {edge.target_input}, "
-                    f"but only {len(slots)} incoming edge(s) exist."
+                    f"but only {slot_count} slot(s) exist."
                 )
             if slots[edge.target_input] is not None:
                 raise ValueError(
@@ -468,19 +503,18 @@ class PipelineRunner:
 
         next_open = 0
         for edge in unresolved:
-            while next_open < len(slots) and slots[next_open] is not None:
+            while next_open < slot_count and slots[next_open] is not None:
                 next_open += 1
-            if next_open >= len(slots):
+            if next_open >= slot_count:
                 raise ValueError(
                     f"Node {node_id} could not resolve input ordering for source '{edge.source_node_id}'."
                 )
             slots[next_open] = edge
             next_open += 1
 
-        if any(slot is None for slot in slots):
-            raise ValueError(f"Node {node_id} has unresolved input slots.")
-
-        return [slot for slot in slots if slot is not None]
+        # None entries beyond the connected edge count are intentional — they
+        # represent unconnected optional input ports.
+        return slots
 
     def _edge_target_input(self, edge: dict[str, Any]) -> int | None:
         if "target_input" in edge and isinstance(edge["target_input"], int):

@@ -36,7 +36,10 @@ ANATOMY OF A BLOCK
     example, and (optionally) a file-picker browse mode.
 
 3.  def validate()    — optional pre-flight check run before execute().
-    Raise BlockValidationError to surface a friendly error in the UI.
+    Raise InsufficientInputs when a required input slot is not connected —
+    the engine will silently skip the block rather than failing the pipeline.
+    Raise BlockValidationError for data-quality issues (wrong columns, empty
+    frame, etc.) that should surface as an error in the UI.
 
 4.  def execute()     — the core logic.  Receives the upstream DataFrame (or
     None for source blocks) and the validated Params object.  Must return a
@@ -67,7 +70,7 @@ REQUIREMENTS: list[str] = []
 PLUGIN_TITLE = "{block_name}"
 PLUGIN_DESCRIPTION = "Describe what this plugin file provides."
 
-from backend.block import BaseBlock, BlockOutput, BlockParams, BlockValidationError, block_param
+from backend.block import BaseBlock, BlockOutput, BlockParams, BlockValidationError, InsufficientInputs, block_param
 import pandas as pd
 
 
@@ -79,8 +82,11 @@ class {class_name}(BaseBlock):
     category = "Custom"
     description = "A short description shown in the palette tooltip."
 
-    # How many DataFrames does this block accept?
-    # 0 = source block (no inputs), 1 = single input (default), 2+ = multi-input
+    # How many input ports does this block expose in the UI?
+    # 0 = source block (no inputs), 1 = single required input (default),
+    # 2+ = multi-input.  Use validate() to decide which slots are truly
+    # required: raise InsufficientInputs for missing required inputs so the
+    # block is skipped rather than crashing the pipeline.
     n_inputs = 1
     input_labels = ["DataFrame"]
     output_labels = ["Result"]
@@ -112,8 +118,12 @@ class {class_name}(BaseBlock):
 
     # ── Validation ────────────────────────────────────────────────────────────
     def validate(self, data: pd.DataFrame | None) -> None:
-        if data is None or data.empty:
-            raise BlockValidationError("Input DataFrame is empty or missing.")
+        # Raise InsufficientInputs when a required input isn't connected yet —
+        # the pipeline will skip this block silently instead of failing.
+        if data is None:
+            raise InsufficientInputs("Input is not connected.")
+        if data.empty:
+            raise BlockValidationError("Input DataFrame is empty.")
 
     # ── Execution ─────────────────────────────────────────────────────────────
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
