@@ -18,8 +18,9 @@ import {
 import "@xyflow/react/dist/style.css";
 import { BlockNode } from "./BlockNode";
 import { CommentNode } from "./CommentNode";
-import type { ForgeNodeData } from "@/hooks/usePipeline";
+import type { CommentNodeData, ForgeNodeData } from "@/hooks/usePipeline";
 import type { BlockSpec } from "@/types/pipeline";
+import { buildCommentTheme } from "@/utils/commentColors";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const NODE_TYPES: NodeTypes = {
@@ -192,6 +193,10 @@ export function Canvas({
         />
         <MiniMap
           nodeColor={(n) => {
+            if (n.type === "commentBlock") {
+              const commentData = n.data as unknown as CommentNodeData;
+              return buildCommentTheme(commentData.color).minimap;
+            }
             const status = (n.data as ForgeNodeData)?.nodeState?.status ?? "idle";
             const colors: Record<string, string> = {
               idle: "#2a2d3a",

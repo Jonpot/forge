@@ -8,6 +8,7 @@ from backend.pipeline_graph import (
     next_identifier,
     topological_order,
 )
+from backend.schemas import DEFAULT_COMMENT_COLOR
 
 DEFAULT_NODE_WIDTH = 240.0
 DEFAULT_NODE_HEIGHT = 150.0
@@ -143,6 +144,9 @@ def _update_group_comments(pipeline: dict[str, Any]) -> None:
                 "id": comment_id,
                 "title": str(group.get("name", "")),
                 "description": str(group.get("description", "")),
+                "color": str(existing_comment.get("color") or DEFAULT_COMMENT_COLOR)
+                if existing_comment is not None
+                else DEFAULT_COMMENT_COLOR,
                 "position": position,
                 "width": width,
                 "height": height,

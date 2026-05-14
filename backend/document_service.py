@@ -30,10 +30,18 @@ from backend.pipeline_graph import (
     normalize_output_handle,
     topological_order,
 )
-from backend.pipeline_layout import prettify_pipeline_layout
+from backend.pipeline_layout import (
+    COMMENT_PADDING_BOTTOM,
+    COMMENT_PADDING_TOP,
+    COMMENT_PADDING_X,
+    DEFAULT_NODE_HEIGHT,
+    DEFAULT_NODE_WIDTH,
+    START_X,
+    prettify_pipeline_layout,
+)
 from backend.pipeline_store import PipelineStore
 from backend.registry import BlockRegistry, BlockSpec
-from backend.schemas import normalize_pipeline_payload
+from backend.schemas import DEFAULT_COMMENT_COLOR, normalize_pipeline_payload
 from backend.settings import Settings
 
 
@@ -1848,6 +1856,95 @@ class DraftService:
             },
             "shape": {"rows": int(data.shape[0]), "columns": int(data.shape[1])},
             "warning": " ".join(warning_parts) if warning_parts else None,
+        }
+
+    def add_comment(
+        self,
+        *,
+        title: str,
+        description: str = "",
+        color: str | None = None,
+        member_ids: list[str] | None = None,
+        x: float | None = None,
+        y: float | None = None,
+        width: float | None = None,
+        height: float | None = None,
+        draft_id: str | None = None,
+        client_id: str | None = None,
+    ) -> dict[str, Any]:
+        draft = self.get_draft(draft_id=draft_id, client_id=client_id)
+        pipeline = clone_pipeline_payload(draft.pipeline)
+
+        if member_ids:
+            nodes_by_id = {str(n["id"]): n for n in pipeline.get("nodes", [])}
+            comments_by_id = {str(c["id"]): c for c in pipeline.get("comments", [])}
+            rects: list[tuple[float, float, float, float]] = []
+            for mid in member_ids:
+                if mid in nodes_by_id:
+                    node = nodes_by_id[mid]
+                    pos = node.get("position") or {}
+                    rects.append((
+                        float(pos.get("x", 0)),
+                        float(pos.get("y", 0)),
+                        float(node.get("width") or DEFAULT_NODE_WIDTH),
+                        float(node.get("height") or DEFAULT_NODE_HEIGHT),
+                    ))
+                elif mid in comments_by_id:
+                    c = comments_by_id[mid]
+                    pos = c.get("position") or {}
+                    rects.append((
+                        float(pos.get("x", 0)),
+                        float(pos.get("y", 0)),
+                        float(c.get("width", 300)),
+                        float(c.get("height", 150)),
+                    ))
+            if rects:
+                min_x = min(r[0] for r in rects)
+                min_y = min(r[1] for r in rects)
+                max_x = max(r[0] + r[2] for r in rects)
+                max_y = max(r[1] + r[3] for r in rects)
+                x = min_x - COMMENT_PADDING_X
+                y = min_y - COMMENT_PADDING_TOP
+                width = max(max_x - min_x + COMMENT_PADDING_X * 2, 280.0)
+                height = max(max_y - min_y + COMMENT_PADDING_TOP + COMMENT_PADDING_BOTTOM, 140.0)
+
+        if x is None or y is None:
+            # Fall back to below all existing content
+            max_y_existing = START_X
+            for node in pipeline.get("nodes", []):
+                pos = node.get("position") or {}
+                ny = float(pos.get("y", START_X))
+                nh = float(node.get("height") or DEFAULT_NODE_HEIGHT)
+                max_y_existing = max(max_y_existing, ny + nh)
+            x = x if x is not None else START_X
+            y = y if y is not None else max_y_existing + 120.0
+
+        width = width if width is not None else 300.0
+        height = height if height is not None else 150.0
+
+        used_ids = {str(c["id"]) for c in pipeline.get("comments", [])}
+        comment_id = next_identifier(used_ids, "comment")
+        pipeline.setdefault("comments", []).append({
+            "id": comment_id,
+            "title": title,
+            "description": description,
+            "color": str(color or DEFAULT_COMMENT_COLOR),
+            "position": {"x": x, "y": y},
+            "width": width,
+            "height": height,
+            "managed": False,
+            "group_id": None,
+        })
+        draft.pipeline = self._normalize_and_validate(pipeline)
+        draft.dirty = True
+        return {
+            "id": comment_id,
+            "title": title,
+            "description": description,
+            "color": str(color or DEFAULT_COMMENT_COLOR),
+            "position": {"x": x, "y": y},
+            "width": width,
+            "height": height,
         }
 
     def _client_key(self, client_id: str | None) -> str:

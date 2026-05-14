@@ -11,6 +11,10 @@ import {
   getPipeline,
 } from "@/api/client";
 import { useWebSocket } from "./useWebSocket";
+import {
+  DEFAULT_COMMENT_COLOR,
+  normalizeCommentColor,
+} from "@/utils/commentColors";
 import type {
   BlockSpec,
   BlockParamSpec,
@@ -27,6 +31,7 @@ import type {
 export interface CommentNodeData extends Record<string, unknown> {
   title: string;
   description: string;
+  color?: string | null;
   managed?: boolean;
   groupId?: string | null;
 }
@@ -170,6 +175,7 @@ function buildPipelinePayload(
       id: n.id,
       title: cd.title ?? "",
       description: cd.description ?? "",
+      color: normalizeCommentColor(typeof cd.color === "string" ? cd.color : null) ?? DEFAULT_COMMENT_COLOR,
       position: n.position,
       width: readNodeWidth(n),
       height: readNodeHeight(n),
@@ -482,6 +488,7 @@ export function usePipeline() {
         data: {
           title: "",
           description: "",
+          color: DEFAULT_COMMENT_COLOR,
           managed: false,
           groupId: id,
         } as CommentNodeData,
@@ -806,6 +813,7 @@ export function usePipeline() {
         data: {
           title: c.title,
           description: c.description,
+          color: normalizeCommentColor(c.color) ?? DEFAULT_COMMENT_COLOR,
           managed: c.managed ?? false,
           groupId: c.group_id ?? c.id,
         } as CommentNodeData,

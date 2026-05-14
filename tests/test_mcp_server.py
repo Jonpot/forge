@@ -327,6 +327,12 @@ def test_group_crud_and_prettify_do_not_duplicate_managed_comments(
     )
 
     document_service.prettify(draft_id=draft.draft_id, client_id=draft.client_id)
+    live_draft = document_service.get_draft(
+        draft_id=draft.draft_id,
+        client_id=draft.client_id,
+    )
+    live_draft.pipeline["comments"][0]["color"] = "#14b8a6"
+    live_draft.pipeline = document_service._normalize_and_validate(live_draft.pipeline)
     document_service.prettify(draft_id=draft.draft_id, client_id=draft.client_id)
 
     pipeline = document_service.get_draft(
@@ -340,6 +346,30 @@ def test_group_crud_and_prettify_do_not_duplicate_managed_comments(
     ]
     assert len(managed_comments) == 1
     assert pipeline["groups"][0]["comment_id"] == managed_comments[0]["id"]
+    assert managed_comments[0]["color"] == "#14b8a6"
+
+
+def test_add_comment_persists_custom_color(tmp_path: Path) -> None:
+    services, draft = _seed_basic_draft(tmp_path)
+    document_service = services.document_service
+
+    created = document_service.add_comment(
+        title="Focus",
+        description="Manual note",
+        color="#06b6d4",
+        draft_id=draft.draft_id,
+        client_id=draft.client_id,
+    )
+
+    pipeline = document_service.get_draft(
+        draft_id=draft.draft_id,
+        client_id=draft.client_id,
+    ).pipeline
+    comment = next(
+        item for item in pipeline["comments"] if item["id"] == created["id"]
+    )
+    assert created["color"] == "#06b6d4"
+    assert comment["color"] == "#06b6d4"
 
 
 def test_inspect_results_truncates_and_reports_images(tmp_path: Path) -> None:
@@ -474,6 +504,7 @@ def test_pipeline_api_preserves_mcp_metadata_fields(tmp_path: Path) -> None:
                 "id": "comment_1",
                 "title": "Primary",
                 "description": "Main flow",
+                "color": "#14b8a6",
                 "position": {"x": 10, "y": 20},
                 "width": 300,
                 "height": 150,
@@ -497,6 +528,7 @@ def test_pipeline_api_preserves_mcp_metadata_fields(tmp_path: Path) -> None:
         assert pipeline["groups"][0]["comment_id"] == "comment_1"
     assert pipeline["comments"][0]["managed"] is True
     assert pipeline["comments"][0]["group_id"] == "group_1"
+    assert pipeline["comments"][0]["color"] == "#14b8a6"
 
 
 def test_apply_pipeline_spec_upserts_graph_in_one_call(tmp_path: Path) -> None:

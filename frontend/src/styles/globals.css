@@ -75,6 +75,11 @@ html, body, #root {
 .react-flow__minimap {
   bottom: 1rem !important;
   right: 1rem !important;
+  z-index: 10 !important;
+}
+
+.react-flow__controls {
+  z-index: 11 !important;
 }
 
 .react-flow__edge-path {

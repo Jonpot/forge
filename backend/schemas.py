@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+DEFAULT_COMMENT_COLOR = "#64748b"
+
 
 def _normalize_identifier(value: str | None, *, fallback: str) -> str:
     text = str(value or "").strip()
@@ -52,6 +54,7 @@ class CommentItemModel(BaseModel):
     id: str
     title: str = ""
     description: str = ""
+    color: str = DEFAULT_COMMENT_COLOR
     position: NodePositionModel
     width: float = 300
     height: float = 150
