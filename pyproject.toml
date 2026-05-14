@@ -11,7 +11,7 @@ include = ["backend*", "blocks*", "Forge*"]
 
 [project]
 name = "forge"
-version = "0.2.3"
+version = "0.2.4"
 description = "Visual block-based experimentation framework for interactive data science pipelines"
 authors = [{name = "Jonathan Potter"}]
 license = "Apache-2.0"
