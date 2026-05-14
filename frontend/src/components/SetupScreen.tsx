@@ -5,6 +5,7 @@
 
 import { useEffect, useState } from "react";
 import type { SetupStage } from "@/hooks/useTauri";
+import { FORGE_VERSION, resolveAppVersion } from "@/utils/version";
 
 interface SetupScreenProps {
   stage: SetupStage;
@@ -78,6 +79,7 @@ function detectOS(): "windows" | "macos" | "other" {
 
 export function SetupScreen({ stage, error, onRetry }: SetupScreenProps) {
   const [logPath, setLogPath] = useState<string | null>(null);
+  const [version, setVersion] = useState<string>(FORGE_VERSION);
 
   useEffect(() => {
     (async () => {
@@ -87,6 +89,16 @@ export function SetupScreen({ stage, error, onRetry }: SetupScreenProps) {
         setLogPath(path);
       } catch { /* not in Tauri or command not available */ }
     })();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void resolveAppVersion().then((v) => {
+      if (!cancelled) setVersion(v);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   if (stage === "ready") return null;
@@ -114,6 +126,7 @@ export function SetupScreen({ stage, error, onRetry }: SetupScreenProps) {
           <p className="text-sm text-gray-500">
             Visual Data Pipeline Framework
           </p>
+          <p className="text-xs text-gray-600 font-mono">v{version}</p>
         </div>
 
         {/* Progress steps */}

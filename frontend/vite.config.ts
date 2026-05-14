@@ -1,10 +1,15 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
+import { readFileSync } from "fs";
 
 // Tauri expects a fixed port during development
 const FRONTEND_PORT = 40963;
 const BACKEND_PORT = 40964;
+
+const { version: FORGE_VERSION } = JSON.parse(
+  readFileSync(path.resolve(__dirname, "package.json"), "utf-8"),
+) as { version: string };
 
 export default defineConfig({
   plugins: [react()],
@@ -12,6 +17,9 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
+  },
+  define: {
+    __FORGE_VERSION__: JSON.stringify(FORGE_VERSION),
   },
 
   // Prevent Vite from obscuring Rust errors in the console

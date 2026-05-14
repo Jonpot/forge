@@ -40,6 +40,19 @@ interface CanvasProps {
   onDropBlock: (spec: BlockSpec, position: { x: number; y: number }) => void;
   onDropComment: (position: { x: number; y: number }) => void;
   onDropBlockFile?: (file: File) => void;
+  /**
+   * Fired when an edge drag is released on empty (non-handle) space.
+   * Used to open a "pick a block to create" menu at the drop point.
+   * `sourceScreenPos` is the screen-space center of the source handle, used
+   * to draw a persistent ghost edge until the user picks or cancels.
+   */
+  onConnectEndOnPane?: (
+    sourceNodeId: string,
+    sourceHandle: string | null,
+    screenPos: { x: number; y: number },
+    flowPos: { x: number; y: number },
+    sourceScreenPos: { x: number; y: number } | null,
+  ) => void;
   draggingSpec: BlockSpec | null;
   draggingComment: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -58,6 +71,7 @@ export function Canvas({
   onDropBlock,
   onDropComment,
   onDropBlockFile,
+  onConnectEndOnPane,
   draggingSpec,
   draggingComment,
   onCanvasReady,
@@ -65,6 +79,11 @@ export function Canvas({
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rfInstance = useRef<ReactFlowInstance<any, any> | null>(null);
+  const pendingConnectSourceRef = useRef<{
+    nodeId: string;
+    handleId: string | null;
+  } | null>(null);
+  const didConnectThisDragRef = useRef(false);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -157,8 +176,76 @@ export function Canvas({
         maxZoom={2}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onConnectStart={(_event, params) => {
+          if (params.handleType !== "source" || !params.nodeId) {
+            pendingConnectSourceRef.current = null;
+            return;
+          }
+          pendingConnectSourceRef.current = {
+            nodeId: params.nodeId,
+            handleId: params.handleId ?? null,
+          };
+          didConnectThisDragRef.current = false;
+        }}
         onConnect={(conn: Connection) => {
+          didConnectThisDragRef.current = true;
           onConnect(conn);
+        }}
+        onConnectEnd={(event) => {
+          const source = pendingConnectSourceRef.current;
+          pendingConnectSourceRef.current = null;
+          if (!source) return;
+          if (didConnectThisDragRef.current) return;
+          if (!onConnectEndOnPane) return;
+
+          // Don't open the picker if the user released over a handle —
+          // they were aiming at a handle even if React Flow rejected it.
+          const target = event.target as Element | null;
+          if (target && target.closest?.(".react-flow__handle")) return;
+
+          // Pull pointer coords (works for both mouse and touch events).
+          // React Flow passes the native DOM event here, not a React synthetic one.
+          let clientX: number | undefined;
+          let clientY: number | undefined;
+          if ("clientX" in event && typeof event.clientX === "number") {
+            clientX = event.clientX;
+            clientY = event.clientY;
+          } else if ("changedTouches" in event) {
+            const touch = event.changedTouches[0];
+            clientX = touch?.clientX;
+            clientY = touch?.clientY;
+          }
+          if (clientX == null || clientY == null) return;
+
+          const screenPos = { x: clientX, y: clientY };
+          const projectFn = rfInstance.current?.screenToFlowPosition;
+          const flowPos = projectFn
+            ? projectFn(screenPos)
+            : screenPos;
+
+          // Look up the source handle's on-screen center so the picker can
+          // draw a persistent ghost edge from it to the drop point. React Flow
+          // stamps every handle with `data-nodeid` + `data-handleid`.
+          let sourceScreenPos: { x: number; y: number } | null = null;
+          const handleSelector = source.handleId
+            ? `.react-flow__handle[data-nodeid="${CSS.escape(source.nodeId)}"][data-handleid="${CSS.escape(source.handleId)}"]`
+            : `.react-flow__handle.source[data-nodeid="${CSS.escape(source.nodeId)}"]`;
+          const handleEl = document.querySelector(handleSelector);
+          if (handleEl) {
+            const rect = handleEl.getBoundingClientRect();
+            sourceScreenPos = {
+              x: rect.left + rect.width / 2,
+              y: rect.top + rect.height / 2,
+            };
+          }
+
+          onConnectEndOnPane(
+            source.nodeId,
+            source.handleId,
+            screenPos,
+            flowPos,
+            sourceScreenPos,
+          );
         }}
         onNodeClick={(_, node) => onNodeClick(node.id)}
         onPaneClick={onPaneClick}

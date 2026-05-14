@@ -152,6 +152,10 @@ html, body, #root {
   to   { stroke-dashoffset: 0; }
 }
 
+@keyframes dash-flow {
+  to { stroke-dashoffset: -14; }
+}
+
 /* ── Animation utilities ──────────────────────────────────────────────────── */
 
 .animate-fade-in {
@@ -172,6 +176,10 @@ html, body, #root {
 
 .animate-gentle-float {
   animation: gentle-float 4s ease-in-out infinite;
+}
+
+.animate-dash-flow {
+  animation: dash-flow 600ms linear infinite;
 }
 
 /* ── Reduced motion ───────────────────────────────────────────────────────── */
