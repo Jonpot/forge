@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+from pathlib import Path
 from types import SimpleNamespace
 
 from backend.block import BlockValidationError
@@ -1314,6 +1315,32 @@ def test_matplotlib_visualization_exports_png_when_enabled(tmp_path) -> None:  #
     )
 
     expected_path = export_dir / "Exported Histogram.png"
+    assert expected_path.exists()
+    assert out.metadata["plot_title"] == "Exported Histogram"
+    assert out.metadata["exported_path"] == str(expected_path)
+
+
+def test_matplotlib_visualization_resolves_relative_export_dir_from_workspace(
+    tmp_path,
+    monkeypatch,
+) -> None:  # type: ignore
+    frame = pd.DataFrame({"value": [0.5, 1.25, 0.9, 1.6]})
+    relative_export_dir = Path("outputs") / "ensemble_expansion_pipeline" / "viz"
+    monkeypatch.setenv("FORGE_WORKSPACE_DIR", str(tmp_path))
+
+    out = MatrixHistogram().execute(
+        frame,
+        SimpleNamespace(
+            column_name="value",
+            bucket_size=None,
+            skip_nulls=True,
+            plot_title="Exported Histogram",
+            export_enabled=True,
+            export_dir=relative_export_dir.as_posix(),
+        ),  # type: ignore
+    )
+
+    expected_path = tmp_path / relative_export_dir / "Exported Histogram.png"
     assert expected_path.exists()
     assert out.metadata["plot_title"] == "Exported Histogram"
     assert out.metadata["exported_path"] == str(expected_path)

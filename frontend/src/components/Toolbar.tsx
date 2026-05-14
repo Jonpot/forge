@@ -9,6 +9,7 @@ import { SettingsModal } from "./SettingsModal";
 interface ToolbarProps {
   pipelineName: string;
   pipelineId: string | null;
+  pipelineFilename: string;
   customCategories: string[];
   appUpdate:
     | {
@@ -22,6 +23,8 @@ interface ToolbarProps {
   isDirty: boolean;
   runError: string | null;
   onNameChange: (name: string) => void;
+  onFilenameChange: (name: string) => void;
+  onFilenameBlur: () => void;
   onSave: () => Promise<string | undefined>;
   onPrettify: () => Promise<void>;
   onLoad: (id: string) => Promise<void>;
@@ -42,6 +45,7 @@ interface ToolbarProps {
 export function Toolbar({
   pipelineName,
   pipelineId,
+  pipelineFilename,
   customCategories,
   appUpdate,
   isRunning,
@@ -49,6 +53,8 @@ export function Toolbar({
   isDirty,
   runError,
   onNameChange,
+  onFilenameChange,
+  onFilenameBlur,
   onSave,
   onPrettify,
   onLoad,
@@ -144,11 +150,17 @@ export function Toolbar({
           spellCheck={false}
         />
 
-        {pipelineId && (
-          <span className="text-forge-muted text-[11px] font-mono hidden sm:block">
-            {pipelineId}
-          </span>
-        )}
+        <input
+          className="hidden sm:block min-w-0 bg-transparent text-forge-muted text-[11px] font-mono border-b border-transparent hover:border-forge-border focus:border-forge-accent focus:outline-none transition-colors"
+          value={pipelineFilename}
+          size={Math.max(pipelineFilename.length, 1)}
+          onChange={(e) => onFilenameChange(e.target.value)}
+          onBlur={onFilenameBlur}
+          aria-label="Pipeline filename"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+        />
 
         <div className="flex-1" />
 

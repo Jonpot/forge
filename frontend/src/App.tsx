@@ -156,8 +156,11 @@ export default function App() {
     edges,
     setEdges,
     pipelineId,
+    pipelineFilename,
     pipelineName,
     setPipelineName,
+    setPipelineFilename,
+    normalizePipelineFilenameDraft,
     selectedNodeId,
     setSelectedNodeId,
     isRunning,
@@ -959,6 +962,7 @@ export default function App() {
       <Toolbar
         pipelineName={pipelineName}
         pipelineId={pipelineId}
+        pipelineFilename={pipelineFilename}
         customCategories={customCategories}
         appUpdate={availableUpdate ? {
           version: availableUpdate.version,
@@ -970,6 +974,8 @@ export default function App() {
         isDirty={isDirty}
         runError={exportError ?? runError}
         onNameChange={setPipelineName}
+        onFilenameChange={setPipelineFilename}
+        onFilenameBlur={normalizePipelineFilenameDraft}
         onSave={savePipeline}
         onPrettify={prettifyPipeline}
         onLoad={handleLoadPipeline}

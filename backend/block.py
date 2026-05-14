@@ -30,6 +30,17 @@ class BlockValidationError(Exception):
     pass
 
 
+class InsufficientInputs(Exception):
+    """Raised by a block when it cannot run because required inputs are not connected.
+
+    The engine catches this and silently skips the block, exactly as if it had
+    never been reached in the topological order.  Raise this from validate() or
+    execute() instead of BlockValidationError so the pipeline is not marked as
+    failed — it simply leaves this node unrun.
+    """
+    pass
+
+
 BrowseMode = Literal["open_file", "save_file", "directory"]
 
 
@@ -105,7 +116,19 @@ class BaseBlock(ABC):
         """Execute block logic and return a BlockOutput."""
 
     def validate(self, data: Any) -> None:
-        """Override to raise BlockValidationError when preconditions fail."""
+        """Override to raise InsufficientInputs when inputs are missing, or BlockValidationError for data issues.
+
+        The default implementation raises InsufficientInputs when data is None
+        (for n_inputs=1 blocks) so that an unconnected block is skipped rather
+        than crashing.  Multi-input blocks should override this to check each
+        slot individually.
+        """
+        n = getattr(self.__class__, "n_inputs", 1)
+        if n == 1 and data is None:
+            raise InsufficientInputs(
+                f"'{getattr(self.__class__, 'name', self.__class__.__name__)}' "
+                "requires an input but none is connected."
+            )
 
     @classmethod
     def normalize_params_payload(
@@ -125,6 +148,7 @@ __all__ = [
     "BlockParams",
     "BlockOutput",
     "BlockValidationError",
+    "InsufficientInputs",
     "BrowseMode",
     "ProgressBar",
     "block_param",

@@ -14,6 +14,7 @@ from backend.block import (
     BlockOutput,
     BlockParams,
     BlockValidationError,
+    InsufficientInputs,
     ProgressBar,
     block_param,
 )
@@ -498,6 +499,10 @@ class SelectColumnsByReference(BaseBlock):
             description="If true, keep selected columns in Input 0 order. If false, append reference-matched columns in Input 1 order after include_columns.",
             example=True,
         )
+
+    def validate(self, data: Any) -> None:
+        if not isinstance(data, list) or len(data) < 2 or any(d is None for d in data[:2]):
+            raise InsufficientInputs("SelectColumnsByReference requires both inputs.")
 
     def execute(
         self, data: list[pd.DataFrame], params: Params | None = None
@@ -1211,6 +1216,10 @@ class FilterByLookupValues(BaseBlock):
         "lt": operator.lt,
         "lte": operator.le,
     }
+
+    def validate(self, data: Any) -> None:
+        if not isinstance(data, list) or len(data) < 2 or any(d is None for d in data[:2]):
+            raise InsufficientInputs("FilterByLookupValues requires both inputs.")
 
     def execute(
         self, data: list[pd.DataFrame], params: Params | None = None
