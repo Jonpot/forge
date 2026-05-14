@@ -157,6 +157,80 @@ def build_mcp_server(services: AppServices) -> FastMCP:
 
     @server.tool(
         description=(
+            "Render a Mermaid graph TD structural summary of the pipeline. "
+            "When `target_group` is omitted, this returns the highest-level chunk DAG only. "
+            "When `target_group` is provided, it returns only the next-level Mermaid view inside that specific chunk/group."
+        ),
+        structured_output=True,
+    )
+    def render_pipeline_mermaid(
+        target_group: str | None = None,
+        draft_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        return document_service.render_pipeline_mermaid(
+            target_group=target_group,
+            draft_id=draft_id,
+            client_id=client_id(ctx),
+        )
+
+    @server.tool(
+        description=(
+            "Inspect one structural chunk/group of the current draft. "
+            "Returns a small child list plus the next-level Mermaid view for that specific target. "
+            "Use the returned child ids to drill deeper with `inspect_group`, or call `inspect_block` for child entries "
+            "whose `inspect_with` value is `inspect_block`."
+        ),
+        structured_output=True,
+    )
+    def inspect_group(
+        target_group: str,
+        draft_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        return document_service.inspect_group(
+            target_group=target_group,
+            draft_id=draft_id,
+            client_id=client_id(ctx),
+        )
+
+    @server.tool(
+        description=(
+            "Create a manual (non-managed) comment block. "
+            "Pass `member_ids` as a list of node IDs and/or existing comment IDs: the tool computes the "
+            "bounding box of all specified elements and positions the comment around them with standard padding. "
+            "Raw `x`, `y`, `width`, `height` can be supplied as a fallback when no member_ids are given. "
+            "Optionally pass `color` as a hex string such as `#14b8a6`."
+        ),
+        structured_output=True,
+    )
+    def add_comment(
+        title: str,
+        description: str = "",
+        color: str | None = None,
+        member_ids: list[str] | None = None,
+        x: float | None = None,
+        y: float | None = None,
+        width: float | None = None,
+        height: float | None = None,
+        draft_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        return document_service.add_comment(
+            title=title,
+            description=description,
+            color=color,
+            member_ids=member_ids,
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            draft_id=draft_id,
+            client_id=client_id(ctx),
+        )
+
+    @server.tool(
+        description=(
             "Add a block node to the active or specified draft. "
             "`params` accepts an object or JSON string; `group_ids` accepts a list, JSON string list, or comma-delimited string."
         ),

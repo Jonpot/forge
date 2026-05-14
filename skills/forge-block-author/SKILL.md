@@ -20,7 +20,11 @@ Create blocks for Forge by following the existing backend contract instead of in
 5. Add a nested `Params(BlockParams)` class with typed fields for every persisted parameter.
    - Use `block_param(...)` for required fields, descriptions, and examples.
    - Prefer field metadata over block-level `param_descriptions`.
-6. Implement `validate(data)` for precondition failures and raise `BlockValidationError` when input assumptions are violated.
+6. Implement `validate(data)` for precondition failures.
+   - Raise `InsufficientInputs` when a required input slot is not connected — the engine skips the block silently.
+   - Raise `BlockValidationError` for data-quality failures (missing columns, wrong shape, etc.) that should surface as a pipeline error.
+   - Multi-input blocks that require all inputs should check `any(d is None for d in data[:n])` and raise `InsufficientInputs`.
+   - Blocks with optional inputs should check only the truly required slots and let `None` pass through to `execute`.
 7. Implement `execute(data, params)` and return `BlockOutput`.
 8. Preserve deterministic output handles:
    - Single output blocks should use the default `output_0`.

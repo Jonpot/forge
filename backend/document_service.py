@@ -39,6 +39,8 @@ from backend.pipeline_layout import (
     START_X,
     prettify_pipeline_layout,
 )
+from backend.pipeline_mermaid import inspect_group as inspect_pipeline_group
+from backend.pipeline_mermaid import render_mermaid
 from backend.pipeline_store import PipelineStore
 from backend.registry import BlockRegistry, BlockSpec
 from backend.schemas import DEFAULT_COMMENT_COLOR, normalize_pipeline_payload
@@ -1857,6 +1859,52 @@ class DraftService:
             "shape": {"rows": int(data.shape[0]), "columns": int(data.shape[1])},
             "warning": " ".join(warning_parts) if warning_parts else None,
         }
+
+    def render_pipeline_mermaid(
+        self,
+        *,
+        target_group: str | None = None,
+        draft_id: str | None = None,
+        client_id: str | None = None,
+    ) -> dict[str, Any]:
+        draft = self.get_draft(draft_id=draft_id, client_id=client_id)
+        pipeline = draft.pipeline
+        nodes = pipeline.get("nodes", [])
+        block_names = {}
+        for node in nodes:
+            nid = str(node["id"])
+            try:
+                block_names[nid] = self.describe_block_type(str(node["block"]))["name"]
+            except Exception:
+                block_names[nid] = str(node["block"])
+        return render_mermaid(
+            pipeline,
+            target_group=target_group,
+            block_names=block_names,
+        )
+
+    def inspect_group(
+        self,
+        *,
+        target_group: str,
+        draft_id: str | None = None,
+        client_id: str | None = None,
+    ) -> dict[str, Any]:
+        draft = self.get_draft(draft_id=draft_id, client_id=client_id)
+        pipeline = draft.pipeline
+        nodes = pipeline.get("nodes", [])
+        block_names = {}
+        for node in nodes:
+            nid = str(node["id"])
+            try:
+                block_names[nid] = self.describe_block_type(str(node["block"]))["name"]
+            except Exception:
+                block_names[nid] = str(node["block"])
+        return inspect_pipeline_group(
+            pipeline,
+            target_group=target_group,
+            block_names=block_names,
+        )
 
     def add_comment(
         self,

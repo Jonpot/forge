@@ -59,6 +59,7 @@ To get started with LLM Agent workflows, you can copy a customized setup prompt 
 - `run_pipeline` is non-blocking for MCP clients; use `poll_run` with the returned `run_id` until the run reaches a terminal state.
 - `run_pipeline_and_wait` provides a blocking one-shot alternative when a client wants a single terminal payload.
 - `inspect_pipeline` returns a compact graph summary for low token usage.
+- `render_pipeline_mermaid` now returns only a small top-level Mermaid chunk map (or a scoped Mermaid when `target_group` is provided), and `inspect_group` lets agents drill into one chunk at a time without paying for the full graph context up front.
 - `inspect_results` and `inspect_results_many` return cropped tabular previews, full output shapes, and attached images when checkpoints exist.
 - `apply_pipeline_spec` and `batch_upsert_graph` upsert groups, nodes, and edges from one declarative spec payload.
 - `set_groups` and `batch_group_membership` batch-edit node memberships across existing groups.

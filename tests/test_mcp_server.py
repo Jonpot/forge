@@ -875,6 +875,8 @@ def test_mcp_server_registers_required_tools_and_prompt(tmp_path: Path) -> None:
         "add_edge",
         "remove_edge",
         "inspect_pipeline",
+        "render_pipeline_mermaid",
+        "inspect_group",
         "inspect_block",
         "create_group",
         "delete_group",
