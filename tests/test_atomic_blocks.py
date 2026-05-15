@@ -1346,7 +1346,7 @@ def test_matplotlib_visualization_resolves_relative_export_dir_from_workspace(
     assert out.metadata["exported_path"] == str(expected_path)
 
 
-def test_plotly_visualization_exports_html_when_enabled(tmp_path) -> None:  # type: ignore
+def test_plotly_visualization_exports_html_when_interactive(tmp_path) -> None:  # type: ignore
     plotly = pytest.importorskip("plotly")
     assert plotly is not None
 
@@ -1373,6 +1373,7 @@ def test_plotly_visualization_exports_html_when_enabled(tmp_path) -> None:  # ty
             title="Exported 3D Scatter",
             export_enabled=True,
             export_dir=str(export_dir),
+            interactive=True,
         ),  # type: ignore
     )
 
@@ -1380,6 +1381,46 @@ def test_plotly_visualization_exports_html_when_enabled(tmp_path) -> None:  # ty
     assert expected_path.exists()
     assert out.metadata["plot_title"] == "Exported 3D Scatter"
     assert out.metadata["exported_path"] == str(expected_path)
+    assert out.metadata["interactive"] is True
+
+
+def test_plotly_3d_scatter_exports_png_by_default(tmp_path) -> None:  # type: ignore
+    plotly = pytest.importorskip("plotly")
+    pytest.importorskip("kaleido")  # required to rasterize Plotly to PNG
+    assert plotly is not None
+
+    frame = pd.DataFrame(
+        {
+            "x": [0.0, 1.0, 2.0],
+            "y": [1.0, 0.5, 1.5],
+            "z": [2.0, 2.5, 3.0],
+        }
+    )
+    export_dir = tmp_path / "exports"
+
+    out = Matrix3DScatterPlot().execute(
+        frame,
+        SimpleNamespace(
+            x_column="x",
+            y_column="y",
+            z_column="z",
+            color_column="",
+            color_mode="auto",
+            size_column="",
+            marker_size=6.0,
+            opacity=0.8,
+            title="Static 3D Scatter",
+            export_enabled=True,
+            export_dir=str(export_dir),
+            interactive=False,
+        ),  # type: ignore
+    )
+
+    expected_path = export_dir / "Static 3D Scatter.png"
+    assert expected_path.exists()
+    assert out.metadata["plot_title"] == "Static 3D Scatter"
+    assert out.metadata["exported_path"] == str(expected_path)
+    assert out.metadata["interactive"] is False
 
 
 def test_matrix_line_chart_uses_equidistant_index_when_x_column_missing() -> None:

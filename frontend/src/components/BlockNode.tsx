@@ -411,6 +411,7 @@ export const BlockNode = memo(function BlockNode({
                     <iframe
                       src={url}
                       title={filename}
+                      sandbox="allow-scripts"
                       className="block w-full h-full bg-white"
                       style={{ border: 0 }}
                     />
@@ -481,6 +482,7 @@ export const BlockNode = memo(function BlockNode({
                     <iframe
                       src={url}
                       title={filename}
+                      sandbox="allow-scripts"
                       className="block w-full bg-white"
                       style={{ height: 160, border: 0 }}
                     />
@@ -632,6 +634,7 @@ function NodeLightbox({
           <iframe
             src={src}
             title="Interactive visualization"
+            sandbox="allow-scripts"
             className="bg-white"
             style={{ width: "85vw", height: "85vh", border: 0 }}
           />

@@ -50,6 +50,7 @@ export function ImageLightbox({ checkpointId, filename, onClose }: ImagePreviewP
           <iframe
             src={url}
             title={filename}
+            sandbox="allow-scripts"
             className="bg-white rounded-b"
             style={{ width: "85vw", height: "calc(90vh - 52px)", border: 0 }}
           />
@@ -89,6 +90,7 @@ export function ImageThumbnail({ checkpointId, filename, onClick }: ImageThumbna
         <iframe
           src={url}
           title={filename}
+          sandbox="allow-scripts"
           className="w-full bg-white pointer-events-none"
           style={{ height: 160, border: 0 }}
         />

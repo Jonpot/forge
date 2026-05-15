@@ -43,8 +43,11 @@ ANATOMY OF A BLOCK
 
 4.  def execute()     — the core logic.  Receives the upstream DataFrame (or
     None for source blocks) and the validated Params object.  Must return a
-    BlockOutput.  Put matplotlib figures in `images=` to display them in the
-    node inspector.
+    BlockOutput.  Put visualizations in `images=`:
+      * matplotlib Figure        → saved as PNG (static)
+      * plotly Figure            → saved as interactive HTML (hover/pan/zoom)
+      * pathlib.Path / str path  → copied as-is; allowed suffixes are
+                                   .png, .jpg, .jpeg, .gif, .webp, .html
 
 PACKAGE DEPENDENCIES
 --------------------
@@ -138,10 +141,15 @@ class {class_name}(BaseBlock):
         result = data[data[col] > params.threshold].copy()
         # -----------------------
 
-        # Optionally produce a matplotlib figure (shown in the node inspector):
+        # Optionally produce a matplotlib figure (shown as a PNG in the inspector):
         # import matplotlib.pyplot as plt
         # fig, ax = plt.subplots()
         # ax.hist(result[col], bins=20)
+        # return BlockOutput(data=result, images=[fig])
+
+        # ...or a plotly figure for an interactive (hover/pan/zoom) HTML chart:
+        # import plotly.express as px
+        # fig = px.histogram(result, x=col)
         # return BlockOutput(data=result, images=[fig])
 
         return BlockOutput(data=result)

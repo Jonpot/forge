@@ -11,6 +11,13 @@ import pandas as pd
 
 from backend.engine.provenance import Provenance, canonical_json
 
+# Suffixes accepted when a block returns a file path in `images=`.
+# SVG is excluded because it can carry inline <script> tags; plotly figures
+# go through the write_html branch, not this one.
+_ALLOWED_IMAGE_ARTIFACT_SUFFIXES = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".webp", ".html"}
+)
+
 
 @dataclass(slots=True)
 class CheckpointRecord:
@@ -122,11 +129,14 @@ class CheckpointStore:
             elif hasattr(image, "write_html"):
                 # Plotly Figure — persist as interactive HTML so the frontend
                 # can embed it in an iframe with full hover/pan/zoom support.
+                # include_plotlyjs="directory" writes a single shared
+                # plotly.min.js next to the HTML files instead of inlining the
+                # ~4MB bundle into every figure.
                 name = f"{base}.html"
                 image.write_html(  # type: ignore[call-arg]
                     str(image_dir / name),
                     full_html=True,
-                    include_plotlyjs=True,
+                    include_plotlyjs="directory",
                 )
             elif hasattr(image, "write_image"):
                 # Non-Plotly image emitter (rare). Fall back to PNG via kaleido.
@@ -139,7 +149,13 @@ class CheckpointStore:
                     ) from exc
             elif isinstance(image, (str, Path)):
                 src = Path(image)
-                name = f"{base}{src.suffix or '.png'}"
+                suffix = src.suffix.lower() if src.suffix else ".png"
+                if suffix not in _ALLOWED_IMAGE_ARTIFACT_SUFFIXES:
+                    raise TypeError(
+                        f"Unsupported image artifact suffix: {suffix!r}. "
+                        f"Allowed: {sorted(_ALLOWED_IMAGE_ARTIFACT_SUFFIXES)}"
+                    )
+                name = f"{base}{suffix}"
                 shutil.copy2(src, image_dir / name)
             else:
                 raise TypeError(f"Unsupported image artifact type: {type(image)!r}")
