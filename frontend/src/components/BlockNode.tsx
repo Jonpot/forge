@@ -101,6 +101,7 @@ export const BlockNode = memo(function BlockNode({
   const prevCheckpointRef = useRef<string | undefined>(undefined);
   const autoSizedCheckpointRef = useRef<string | null>(null);
   const idleNormalizedRef = useRef(false);
+  const runningHeightExpandedRef = useRef(false);
 
   useEffect(() => {
     if (!isViz || !checkpointId || checkpointId === prevCheckpointRef.current) {
@@ -137,6 +138,18 @@ export const BlockNode = memo(function BlockNode({
       idleNormalizedRef.current = false;
     }
   }, [status]);
+
+  // Interactive HTML artifacts (plotly figures) don't have natural dimensions
+  // the way an <img> does, so seed a sensible default aspect to trigger the
+  // auto-size effect below. The value is roughly matched to matplotlib's
+  // default figsize=[10, 6] so an interactive plot opens at the same size as
+  // its static counterpart.
+  useEffect(() => {
+    if (!isViz || images.length === 0 || primaryImageAspect !== null) return;
+    if (images[0].toLowerCase().endsWith(".html")) {
+      setPrimaryImageAspect(1.6);
+    }
+  }, [images, primaryImageAspect, isViz]);
 
   // Build input handles for multi-input blocks
   const inputHandles =
@@ -255,6 +268,39 @@ export const BlockNode = memo(function BlockNode({
     showProgress,
     width,
   ]);
+
+  // When the block enters the running state, make sure its explicit height
+  // can house the progress bar — otherwise the progress strip overflows past
+  // the bottom border. Only applies to blocks that already have a fixed
+  // style.height (viz blocks, or any block the user has resized); blocks
+  // without an explicit height grow naturally with their content.
+  useEffect(() => {
+    if (status !== "running") {
+      runningHeightExpandedRef.current = false;
+      return;
+    }
+    if (runningHeightExpandedRef.current) return;
+    const node = getNode(id);
+    const currentHeight =
+      typeof node?.style?.height === "number"
+        ? Number(node.style.height)
+        : null;
+    if (currentHeight === null) return;
+    // Header (~36) + footer (~28) + progress (~34) + error (~24 when set) + buffer.
+    const runningMinHeight = Math.max(
+      minResizableHeight,
+      130 + (hasError ? 24 : 0),
+    );
+    if (currentHeight >= runningMinHeight) return;
+    runningHeightExpandedRef.current = true;
+    setNodes((ns) =>
+      ns.map((n) =>
+        n.id === id
+          ? { ...n, style: { ...n.style, height: runningMinHeight } }
+          : n,
+      ),
+    );
+  }, [status, hasError, id, getNode, setNodes, minResizableHeight]);
 
   const singleImageMode = images.length === 1;
 

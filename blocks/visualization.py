@@ -2498,7 +2498,11 @@ class Matrix3DScatterPlot(VisualizationBlock):
                 "xaxis_title": x_column,
                 "yaxis_title": y_column,
                 "zaxis_title": z_column,
-            }
+            },
+            # Tight margins keep the 3D scene from being crowded into a thin
+            # strip when the block is small. The top margin reserves room for
+            # the title; everything else hugs the iframe/PNG edge.
+            margin=dict(l=0, r=0, t=40, b=0),
         )
 
         interactive = bool(getattr(params, "interactive", False))
