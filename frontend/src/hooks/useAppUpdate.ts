@@ -76,7 +76,17 @@ export function useAppUpdate() {
       return;
     }
 
-    if (!window.confirm(buildConfirmationMessage(availableUpdate))) {
+    // Use the Tauri dialog plugin's `ask` rather than `window.confirm`:
+    // WebView2 does not block JS execution on the native synchronous confirm,
+    // so the installer would race ahead of the user's response.
+    const { ask, message } = await import("@tauri-apps/plugin-dialog");
+    const confirmed = await ask(buildConfirmationMessage(availableUpdate), {
+      title: `Install Forge ${availableUpdate.version}?`,
+      kind: "info",
+      okLabel: "Install",
+      cancelLabel: "Cancel",
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -97,8 +107,12 @@ export function useAppUpdate() {
 
       // If we only had a release-page fallback, keep the button visible.
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      window.alert(`Forge update failed:\n\n${message}`);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      await message(`Forge update failed:\n\n${errorMessage}`, {
+        title: "Update failed",
+        kind: "error",
+      });
     } finally {
       setInstalling(false);
     }
