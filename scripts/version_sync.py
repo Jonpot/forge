@@ -8,7 +8,12 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+# Accept MAJOR.MINOR.PATCH optionally followed by a pre-release tag (-foo, -1,
+# -alpha.2, etc.) and/or build metadata (+sha). Cargo and npm both accept this
+# shape natively.
+SEMVER_RE = re.compile(
+    r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
 
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 FRONTEND_PACKAGE = REPO_ROOT / "frontend" / "package.json"
