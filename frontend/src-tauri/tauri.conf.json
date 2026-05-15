@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Forge",
-  "version": "0.2.7-a",
+  "version": "0.2.8",
   "identifier": "com.jonpot.forge",
   "build": {
     "frontendDist": "../dist",
