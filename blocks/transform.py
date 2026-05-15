@@ -18,6 +18,14 @@ from backend.block import (
     ProgressBar,
     block_param,
 )
+from blocks._columns import (
+    INDEX_KEY,
+    column_exists,
+    column_values,
+    is_index_key,
+    require_columns,
+    select_columns_with_index,
+)
 
 
 def _parse_columns(value: Any) -> list[str]:
@@ -138,13 +146,16 @@ class ReorderColumns(BaseBlock):
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
         if params is None:
             raise BlockValidationError("ReorderColumns requires params.")
-        desired_order = _parse_columns(params.column_order)
-        missing = [col for col in desired_order if col not in data.columns]
-        if missing:
-            raise BlockValidationError(f"ReorderColumns missing columns: {missing}")
-        remaining = [col for col in data.columns if col not in desired_order]
+        desired_order = require_columns(
+            data, _parse_columns(params.column_order), "ReorderColumns", "column_order"
+        )
+        remaining = [
+            col
+            for col in data.columns
+            if col not in desired_order and not (col == INDEX_KEY and any(is_index_key(k) for k in desired_order))
+        ]
         new_order = desired_order + remaining
-        reordered = data[new_order].copy()
+        reordered = select_columns_with_index(data, new_order)
         return BlockOutput(data=reordered)
 
 
@@ -177,14 +188,22 @@ class MedianCenterRows(BaseBlock):
 
 class SortRows(BaseBlock):
     name = "Sort Rows"
-    version = "1.0.0"
+    version = "1.1.0"
     category = "Transform"
     description = "Sort rows by values in a specified column."
     input_labels = ["DataFrame"]
     output_labels = ["Sorted DataFrame"]
+    usage_notes = [
+        "Use column='index' to sort by the DataFrame's row index.",
+    ]
 
     class Params(BlockParams):
-        column: str
+        column: str = block_param(
+            description=(
+                "Column to sort by. Use 'index' to sort by the DataFrame's row index."
+            ),
+            example="value",
+        )
         ascending: bool = True
 
     def validate(self, data: pd.DataFrame) -> None:
@@ -194,21 +213,30 @@ class SortRows(BaseBlock):
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
         if params is None:
             raise BlockValidationError("SortRows requires params.")
-        if params.column not in data.columns:
-            raise BlockValidationError(f"Column '{params.column}' does not exist.")
-        sorted_df = data.sort_values(by=params.column, ascending=bool(params.ascending))
+        ascending = bool(params.ascending)
+        if is_index_key(params.column):
+            sorted_df = data.sort_index(ascending=ascending)
+        else:
+            if params.column not in data.columns:
+                raise BlockValidationError(
+                    f"Column '{params.column}' does not exist."
+                )
+            sorted_df = data.sort_values(by=params.column, ascending=ascending)
         return BlockOutput(data=sorted_df)
 
 
 class FilterRows(BaseBlock):
     name = "Filter Rows"
-    version = "1.0.1"
+    version = "1.1.0"
     category = "Transform"
     description = "Keep rows that satisfy a column comparison condition."
     input_labels = ["DataFrame"]
     output_labels = ["Filtered Rows"]
+    usage_notes = [
+        "Use column='index' to filter on the DataFrame's row index.",
+    ]
     param_descriptions = {
-        "column": "Column to test for each row.",
+        "column": "Column to test for each row. Use 'index' to test the DataFrame's row index.",
         "operator": "Comparison operator. One of: eq, ne, gt, gte, lt, lte.",
         "value": "Value to compare against. Numeric-looking values are coerced when the selected column is numeric.",
     }
@@ -234,14 +262,14 @@ class FilterRows(BaseBlock):
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
         if params is None:
             raise BlockValidationError("FilterRows requires params.")
-        if params.column not in data.columns:
+        if not column_exists(data, params.column):
             raise BlockValidationError(f"Column '{params.column}' does not exist.")
         if params.operator not in self._ops:
             raise BlockValidationError(
                 f"Unsupported operator '{params.operator}'. Valid: {sorted(self._ops)}"
             )
 
-        column = data[params.column]
+        column = column_values(data, params.column)
         compare_value = params.value
 
         # Cast comparison value to numeric only for numeric columns.
@@ -293,18 +321,17 @@ class DropNullRows(BaseBlock):
         if params is None:
             raise BlockValidationError("DropNullRows requires params.")
 
-        columns = _parse_columns(params.columns)
-        if not columns:
-            columns = [str(col) for col in data.columns]
-        missing = [col for col in columns if col not in data.columns]
-        if missing:
-            raise BlockValidationError(f"Columns not found for null drop: {missing}")
+        requested = _parse_columns(params.columns)
+        if not requested:
+            requested = [str(col) for col in data.columns]
+        columns = require_columns(data, requested, "DropNullRows", "columns")
 
         how = str(params.how or "any").strip().lower()
         if how not in {"any", "all"}:
             raise BlockValidationError("how must be one of: any, all.")
 
-        null_mask = data[columns].isna()
+        check_frame = select_columns_with_index(data, columns)
+        null_mask = check_frame.isna()
         rows_to_drop = null_mask.any(axis=1) if how == "any" else null_mask.all(axis=1)
         filtered = data.loc[~rows_to_drop].copy()
         return BlockOutput(
@@ -350,20 +377,28 @@ class DeduplicateRows(BaseBlock):
         if params is None:
             raise BlockValidationError("DeduplicateRows requires params.")
 
-        key_columns = _parse_columns(params.key_columns)
-        if not key_columns:
+        requested = _parse_columns(params.key_columns)
+        if not requested:
             raise BlockValidationError("key_columns is required.")
-        missing = [col for col in key_columns if col not in data.columns]
-        if missing:
-            raise BlockValidationError(
-                f"Columns not found for deduplication: {missing}"
-            )
+        key_columns = require_columns(
+            data, requested, "DeduplicateRows", "key_columns"
+        )
 
         keep = str(params.keep or "first").strip().lower()
         if keep not in {"first", "last"}:
             raise BlockValidationError("keep must be one of: first, last.")
 
-        deduped = data.drop_duplicates(subset=key_columns, keep=keep).copy()  # pyright: ignore[reportArgumentType]
+        if any(is_index_key(k) for k in key_columns):
+            # pandas drop_duplicates(subset=...) only accepts column names, so
+            # materialize the index as a column before dropping. Use raw
+            # ndarray assignment because the index may have duplicates.
+            staged = data.copy()
+            staged[INDEX_KEY] = data.index.to_numpy()
+            subset = [INDEX_KEY if is_index_key(k) else k for k in key_columns]
+            keep_mask = ~staged.duplicated(subset=subset, keep=keep)  # pyright: ignore[reportArgumentType]
+            deduped = data.loc[keep_mask].copy()
+        else:
+            deduped = data.drop_duplicates(subset=key_columns, keep=keep).copy()  # pyright: ignore[reportArgumentType]
         return BlockOutput(
             data=deduped,
             metadata={
@@ -520,12 +555,12 @@ class SelectColumnsByReference(BaseBlock):
         ):
             raise BlockValidationError("Both inputs must be DataFrames.")
 
-        include_columns = _parse_columns(params.include_columns)
-        missing_include = [col for col in include_columns if col not in frame.columns]
-        if missing_include:
-            raise BlockValidationError(
-                f"Input 0 missing include_columns: {missing_include}"
-            )
+        include_columns = require_columns(
+            frame,
+            _parse_columns(params.include_columns),
+            "SelectColumnsByReference",
+            "include_columns",
+        )
 
         reference_matches = [
             str(col)
@@ -540,12 +575,14 @@ class SelectColumnsByReference(BaseBlock):
         if bool(params.preserve_input_order):
             keep_set = set(include_columns) | set(reference_matches)
             keep_columns = [str(col) for col in frame.columns if str(col) in keep_set]
+            if any(is_index_key(k) for k in include_columns) and INDEX_KEY not in keep_columns:
+                keep_columns = [INDEX_KEY] + keep_columns
         else:
             keep_columns = include_columns + [
                 col for col in reference_matches if col not in include_columns
             ]
 
-        selected = frame.loc[:, keep_columns].copy()
+        selected = select_columns_with_index(frame, keep_columns)
         return BlockOutput(
             data=selected,
             metadata={
@@ -597,17 +634,23 @@ class ImputeMissingValues(BaseBlock):
                 "strategy must be one of: mean, median, constant."
             )
 
-        selected_cols = _parse_columns(params.columns)
-        if not selected_cols:
+        requested = _parse_columns(params.columns)
+        if not requested:
             selected_cols = data.select_dtypes(include="number").columns.tolist()
+        else:
+            selected_cols = require_columns(
+                data, requested, "ImputeMissingValues", "columns"
+            )
         if not selected_cols:
             raise BlockValidationError("No columns available to impute.")
 
-        missing = [col for col in selected_cols if col not in data.columns]
-        if missing:
-            raise BlockValidationError(f"Impute columns not found: {missing}")
-
         result = data.copy()
+        if any(is_index_key(c) for c in selected_cols):
+            if INDEX_KEY not in result.columns:
+                result[INDEX_KEY] = data.index.to_numpy()
+            selected_cols = [
+                INDEX_KEY if is_index_key(c) else c for c in selected_cols
+            ]
         n_cells_filled = 0
         fill_values: dict[str, float] = {}
         fallback = float(params.fill_value)
@@ -673,11 +716,10 @@ class SelectColumns(BaseBlock):
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
         if params is None:
             raise BlockValidationError("SelectColumns requires params.")
-        cols = _parse_columns(params.columns)
-        missing = [col for col in cols if col not in data.columns]
-        if missing:
-            raise BlockValidationError(f"Columns not found: {missing}")
-        selected = data[cols].copy()
+        cols = require_columns(
+            data, _parse_columns(params.columns), "SelectColumns", "columns"
+        )
+        selected = select_columns_with_index(data, cols)
         return BlockOutput(data=selected)
 
 
@@ -756,19 +798,21 @@ class MeltColumns(BaseBlock):
         if params is None:
             raise BlockValidationError("MeltColumns requires params.")
 
-        id_columns = _parse_columns(params.id_columns)
+        id_columns = require_columns(
+            data, _parse_columns(params.id_columns), "MeltColumns", "id_columns"
+        )
         if not id_columns:
             raise BlockValidationError("id_columns is required.")
 
-        value_columns = _parse_columns(params.value_columns)
-        if not value_columns:
+        value_columns_raw = _parse_columns(params.value_columns)
+        if not value_columns_raw:
             value_columns = [col for col in data.columns if col not in id_columns]
+        else:
+            value_columns = require_columns(
+                data, value_columns_raw, "MeltColumns", "value_columns"
+            )
         if not value_columns:
             raise BlockValidationError("value_columns resolved to no columns.")
-
-        missing = [col for col in id_columns + value_columns if col not in data.columns]
-        if missing:
-            raise BlockValidationError(f"Columns not found for melt: {missing}")
 
         var_name = str(params.variable_column).strip() or "variable"
         val_name = str(params.value_column).strip() or "value"
@@ -781,9 +825,23 @@ class MeltColumns(BaseBlock):
                 f"value_column '{val_name}' conflicts with existing column."
             )
 
-        melted = data.melt(
-            id_vars=id_columns,
-            value_vars=value_columns,
+        # If any key uses the index sentinel, materialize a column for melt.
+        if any(is_index_key(k) for k in id_columns + value_columns):
+            staged = data.copy()
+            if INDEX_KEY not in staged.columns:
+                staged[INDEX_KEY] = data.index.to_numpy()
+            id_vars = [INDEX_KEY if is_index_key(k) else k for k in id_columns]
+            value_vars = [
+                INDEX_KEY if is_index_key(k) else k for k in value_columns
+            ]
+        else:
+            staged = data
+            id_vars = id_columns
+            value_vars = value_columns
+
+        melted = staged.melt(
+            id_vars=id_vars,
+            value_vars=value_vars,
             var_name=var_name,
             value_name=val_name,
         )
@@ -821,14 +879,20 @@ class CastColumns(BaseBlock):
             raise BlockValidationError("CastColumns requires params.")
         result = data.copy()
 
-        string_cols = _parse_columns(params.string_columns)
-        numeric_cols = _parse_columns(params.numeric_columns)
+        string_cols = require_columns(
+            data, _parse_columns(params.string_columns), "CastColumns", "string_columns"
+        )
+        numeric_cols = require_columns(
+            data, _parse_columns(params.numeric_columns), "CastColumns", "numeric_columns"
+        )
 
-        missing = [
-            col for col in string_cols + numeric_cols if col not in result.columns
-        ]
-        if missing:
-            raise BlockValidationError(f"Columns not found for casting: {missing}")
+        # Materialize the index as a real column once if any cast target uses it,
+        # so subsequent reassignments persist into the output frame.
+        if any(is_index_key(c) for c in string_cols + numeric_cols):
+            if INDEX_KEY not in result.columns:
+                result[INDEX_KEY] = data.index.to_numpy()
+            string_cols = [INDEX_KEY if is_index_key(c) else c for c in string_cols]
+            numeric_cols = [INDEX_KEY if is_index_key(c) else c for c in numeric_cols]
 
         for col in ProgressBar(
             string_cols,
@@ -882,7 +946,7 @@ class SplitListColumn(BaseBlock):
         column_name = str(params.column_name).strip()
         if not column_name:
             raise BlockValidationError("column_name is required.")
-        if column_name not in data.columns:
+        if not column_exists(data, column_name):
             raise BlockValidationError(f"Column '{column_name}' not found.")
 
         try:
@@ -890,11 +954,12 @@ class SplitListColumn(BaseBlock):
         except Exception as exc:
             raise BlockValidationError("starting_index must be an integer.") from exc
 
+        source_series = column_values(data, column_name)
         parsed_rows: list[list[Any]] = []
         expected_length: int | None = None
         for row_idx, value in enumerate(
             ProgressBar(
-                data[column_name].tolist(),
+                source_series.tolist(),
                 label=f"Splitting '{column_name}'",
                 throttle_seconds=0.2,
             )
@@ -1108,17 +1173,24 @@ class PivotTable(BaseBlock):
                 "PivotTable currently supports exactly one values field."
             )
 
-        required = {index_cols[0], column_cols[0], value_cols[0]}
-        missing = required - set(data.columns)
+        missing: list[str] = []
+        for col in (index_cols[0], column_cols[0], value_cols[0]):
+            if not column_exists(data, col):
+                missing.append(col)
         if missing:
             raise BlockValidationError(
                 f"PivotTable missing required columns: {sorted(missing)}"
             )
 
+        # pandas pivot_table accepts arrays or column names for index/columns/values.
+        # For the index sentinel, pass the DataFrame index Series directly.
+        def _pivot_key(key: str) -> Any:
+            return column_values(data, key) if is_index_key(key) else key
+
         pivoted = data.pivot_table(
-            index=index_cols[0],
-            columns=column_cols[0],
-            values=value_cols[0],
+            index=_pivot_key(index_cols[0]),
+            columns=_pivot_key(column_cols[0]),
+            values=_pivot_key(value_cols[0]),
             aggfunc=params.aggfunc,  # pyright: ignore[reportArgumentType]
         )
         if pivoted is None or pivoted.empty:
@@ -1231,16 +1303,16 @@ class FilterByLookupValues(BaseBlock):
                 "FilterByLookupValues expects [data_df, lookup_df]."
             )
         data_df, lookup_df = data
-        if params.data_key not in data_df.columns:
+        if not column_exists(data_df, params.data_key):
             raise BlockValidationError(f"Data key '{params.data_key}' not found.")
-        if params.lookup_key not in lookup_df.columns:
+        if not column_exists(lookup_df, params.lookup_key):
             raise BlockValidationError(f"Lookup key '{params.lookup_key}' not found.")
 
         filtered_lookup = lookup_df.copy()
         lookup_filter_column = params.lookup_filter_column
 
         if lookup_filter_column is not None:
-            if lookup_filter_column not in filtered_lookup.columns:
+            if not column_exists(filtered_lookup, lookup_filter_column):
                 raise BlockValidationError(
                     f"Lookup filter column '{lookup_filter_column}' not found."
                 )
@@ -1258,15 +1330,18 @@ class FilterByLookupValues(BaseBlock):
                     "lookup_filter_value is required when lookup_filter_column is set."
                 )
             op = self._ops[operator_key]
-            mask = op(filtered_lookup[lookup_filter_column], params.lookup_filter_value)
+            mask = op(
+                column_values(filtered_lookup, lookup_filter_column),
+                params.lookup_filter_value,
+            )
             filtered_lookup = filtered_lookup[mask]
 
-        values = set(filtered_lookup[params.lookup_key].dropna().tolist())
+        values = set(column_values(filtered_lookup, params.lookup_key).dropna().tolist())
         if not values:
             out = data_df.iloc[0:0].copy() if params.keep_matches else data_df.copy()
             return BlockOutput(data=out, metadata={"lookup_value_count": 0})
 
-        series = data_df[params.data_key]
+        series = column_values(data_df, params.data_key)
         mask = series.isin(values)
         out = data_df[mask].copy() if params.keep_matches else data_df[~mask].copy()
         return BlockOutput(data=out, metadata={"lookup_value_count": int(len(values))})

@@ -13,6 +13,11 @@ from backend.block import (
     InsufficientInputs,
     block_param,
 )
+from blocks._columns import (
+    column_exists,
+    column_values,
+    require_columns,
+)
 
 
 def _parse_columns(value: Any) -> list[str]:
@@ -66,21 +71,21 @@ def _resolve_operand(
             "scalar",
         )
 
-    cols = _parse_columns(column_name)
-    if not cols:
+    cols_raw = _parse_columns(column_name)
+    if not cols_raw:
         if df.shape[1] == 1:
-            cols = [str(df.columns[0])]
+            cols_raw = [str(df.columns[0])]
         else:
             raise BlockValidationError(
                 f"input_{input_number}_column_name is required when Input {input_number} has multiple columns."
             )
-    missing = [col for col in cols if col not in df.columns]
-    if missing:
-        raise BlockValidationError(f"Input {input_number} missing columns: {missing}")
+    cols = require_columns(
+        df, cols_raw, f"Input {input_number}", f"input_{input_number}_column_name"
+    )
 
     series_list: list[pd.Series] = []
     for col in cols:
-        series = df[col].copy().reset_index(drop=True)
+        series = column_values(df, col).copy().reset_index(drop=True)
         series.index = result_index
         series_list.append(series)
     return series_list, cols, "dataframe"
@@ -332,14 +337,14 @@ class AbsoluteValueColumn(BaseBlock):
         if params is None:
             raise BlockValidationError("AbsoluteValueColumn requires params.")
         self.validate(data)
-        if params.source_column not in data.columns:
+        if not column_exists(data, params.source_column):
             raise BlockValidationError(
                 f"AbsoluteValueColumn missing column: '{params.source_column}'."
             )
 
         frame = data.copy()
         frame[params.output_column] = pd.to_numeric(
-            frame[params.source_column], errors="coerce"
+            column_values(data, params.source_column), errors="coerce"
         ).abs()
         return BlockOutput(
             data=frame,
@@ -365,14 +370,15 @@ class MultiplyColumns(BaseBlock):
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
         if params is None:
             raise BlockValidationError("MultiplyColumns requires params.")
-        cols = _parse_columns(params.columns)
-        if not cols:
+        raw_cols = _parse_columns(params.columns)
+        if not raw_cols:
             raise BlockValidationError("MultiplyColumns requires at least one column.")
-        missing = [col for col in cols if col not in data.columns]
-        if missing:
-            raise BlockValidationError(f"MultiplyColumns missing columns: {missing}")
+        cols = require_columns(data, raw_cols, "MultiplyColumns", "columns")
         frame = data.copy()
-        matrix = frame[cols].apply(pd.to_numeric, errors="coerce").fillna(1.0)
+        series_list = [
+            pd.to_numeric(column_values(data, c), errors="coerce") for c in cols
+        ]
+        matrix = pd.concat(series_list, axis=1).fillna(1.0)
         frame[params.output_column] = matrix.prod(axis=1)
         return BlockOutput(data=frame)
 

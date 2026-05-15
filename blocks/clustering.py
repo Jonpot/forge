@@ -11,6 +11,7 @@ from backend.block import (
     BlockValidationError,
     block_param,
 )
+from blocks._columns import column_values, is_index_key
 
 
 def _parse_columns(value: Any) -> list[str]:
@@ -105,13 +106,18 @@ class KMeansClustering(BaseBlock):
             selected_cols = sorted(set(selected_cols + prefixed))
         if not selected_cols:
             selected_cols = numeric_cols
-        selected_cols = [col for col in selected_cols if col in data.columns]
+        selected_cols = [
+            col for col in selected_cols if is_index_key(col) or col in data.columns
+        ]
         if len(selected_cols) == 0:
             raise BlockValidationError("No columns selected for clustering.")
         if params.n_clusters <= 0:
             raise BlockValidationError("n_clusters must be > 0.")
 
-        matrix = data[selected_cols].to_numpy(dtype=float)
+        feature_series = [
+            pd.to_numeric(column_values(data, c), errors="coerce") for c in selected_cols
+        ]
+        matrix = pd.concat(feature_series, axis=1).to_numpy(dtype=float)
         if params.standardize:
             matrix = StandardScaler(with_mean=True, with_std=True).fit_transform(matrix)
 

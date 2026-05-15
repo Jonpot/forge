@@ -16,6 +16,13 @@ from backend.block import (
     InsufficientInputs,
     block_param,
 )
+from blocks._columns import (
+    INDEX_KEY,
+    column_exists,
+    column_values,
+    is_index_key,
+    require_columns,
+)
 
 
 def _parse_columns(value: Any) -> list[str]:
@@ -77,10 +84,7 @@ def _resolve_numeric_columns(
 ) -> list[str]:
     cols = _parse_columns(raw_columns)
     if cols:
-        missing = [col for col in cols if col not in data.columns]
-        if missing:
-            raise BlockValidationError(f"{block_name} missing columns: {missing}")
-        return cols
+        return require_columns(data, cols, block_name, "columns")
 
     numeric_columns = [
         str(col) for col in data.select_dtypes(include=[np.number]).columns.tolist()
@@ -212,16 +216,25 @@ class GroupAggregate(BaseBlock):
         if params is None:
             raise BlockValidationError("GroupAggregate requires params.")
 
-        group_columns = _parse_columns(params.group_columns)
-        if not group_columns:
+        raw_group = _parse_columns(params.group_columns)
+        if not raw_group:
             raise BlockValidationError("group_columns is required.")
-        missing_group_columns = [
-            col for col in group_columns if col not in data.columns
-        ]
-        if missing_group_columns:
-            raise BlockValidationError(
-                f"GroupAggregate missing group columns: {missing_group_columns}"
-            )
+        group_columns_resolved = require_columns(
+            data, raw_group, "GroupAggregate", "group_columns"
+        )
+
+        # Materialize the index as a column when any group key uses the sentinel,
+        # so the rest of the routine can rely on pure column-name semantics.
+        if any(is_index_key(c) for c in group_columns_resolved):
+            work_df = data.copy()
+            if INDEX_KEY not in work_df.columns:
+                work_df[INDEX_KEY] = data.index.to_numpy()
+            group_columns = [
+                INDEX_KEY if is_index_key(c) else c for c in group_columns_resolved
+            ]
+        else:
+            work_df = data
+            group_columns = group_columns_resolved
 
         specs = _parse_json_spec_list(
             params.aggregations,
@@ -231,14 +244,14 @@ class GroupAggregate(BaseBlock):
         if not specs:
             raise BlockValidationError("aggregations is required.")
 
-        grouped = data.groupby(group_columns, dropna=False, sort=False)
+        grouped = work_df.groupby(group_columns, dropna=False, sort=False)
         result = grouped.size().reset_index(name="__group_size__")
         result = result.drop(columns=["__group_size__"])
 
         normalized_specs: list[dict[str, str]] = []
         for spec in specs:
             agg = str(spec.get("agg", "") or "").strip().lower()
-            source = str(
+            source_raw = str(
                 spec.get("source", spec.get("column", spec.get("source_column", "")))
                 or ""
             ).strip()
@@ -253,20 +266,26 @@ class GroupAggregate(BaseBlock):
                 raise BlockValidationError(
                     "GroupAggregate requires every aggregation spec to define output."
                 )
-            if agg != "size" and not source:
+            if agg != "size" and not source_raw:
                 raise BlockValidationError(
                     f"GroupAggregate aggregation '{agg}' requires source."
                 )
-            if source and source != "*" and source not in data.columns:
-                raise BlockValidationError(
-                    f"GroupAggregate missing source column '{source}'."
-                )
+            if source_raw and source_raw != "*":
+                if not column_exists(data, source_raw):
+                    raise BlockValidationError(
+                        f"GroupAggregate missing source column '{source_raw}'."
+                    )
+                source = INDEX_KEY if is_index_key(source_raw) else source_raw
+            else:
+                source = source_raw
 
             if agg == "size":
                 series_df = grouped.size().reset_index(name=output)
             elif agg in self._numeric_aggs:
-                working = data[group_columns].copy()
-                working["__value__"] = pd.to_numeric(data[source], errors="coerce")
+                working = work_df[group_columns].copy()
+                working["__value__"] = pd.to_numeric(
+                    column_values(work_df, source), errors="coerce"
+                )
                 series_df = (
                     working.groupby(group_columns, dropna=False, sort=False)[
                         "__value__"
@@ -284,7 +303,7 @@ class GroupAggregate(BaseBlock):
             result = result.merge(series_df, on=group_columns, how="left")
             normalized_specs.append(
                 {
-                    "source": source or "*",
+                    "source": source_raw or "*",
                     "agg": agg,
                     "output": output,
                 }
@@ -343,24 +362,37 @@ class GroupPairMetrics(BaseBlock):
         if params is None:
             raise BlockValidationError("GroupPairMetrics requires params.")
 
-        group_columns = _parse_columns(params.group_columns)
-        if not group_columns:
+        raw_group = _parse_columns(params.group_columns)
+        if not raw_group:
             raise BlockValidationError("group_columns is required.")
-        missing_group_columns = [
-            col for col in group_columns if col not in data.columns
-        ]
-        if missing_group_columns:
-            raise BlockValidationError(
-                f"GroupPairMetrics missing group columns: {missing_group_columns}"
-            )
-        if params.x_column not in data.columns:
+        group_columns_resolved = require_columns(
+            data, raw_group, "GroupPairMetrics", "group_columns"
+        )
+        if not column_exists(data, params.x_column):
             raise BlockValidationError(
                 f"GroupPairMetrics missing x column '{params.x_column}'."
             )
-        if params.y_column not in data.columns:
+        if not column_exists(data, params.y_column):
             raise BlockValidationError(
                 f"GroupPairMetrics missing y column '{params.y_column}'."
             )
+
+        if any(is_index_key(c) for c in group_columns_resolved) or is_index_key(
+            params.x_column
+        ) or is_index_key(params.y_column):
+            work_df = data.copy()
+            if INDEX_KEY not in work_df.columns:
+                work_df[INDEX_KEY] = data.index.to_numpy()
+            group_columns = [
+                INDEX_KEY if is_index_key(c) else c for c in group_columns_resolved
+            ]
+            x_column = INDEX_KEY if is_index_key(params.x_column) else params.x_column
+            y_column = INDEX_KEY if is_index_key(params.y_column) else params.y_column
+        else:
+            work_df = data
+            group_columns = group_columns_resolved
+            x_column = params.x_column
+            y_column = params.y_column
 
         metrics = [metric.lower() for metric in _parse_columns(params.metrics)]
         if not metrics:
@@ -375,7 +407,7 @@ class GroupPairMetrics(BaseBlock):
 
         output_prefix = str(params.output_prefix or "")
         rows: list[dict[str, Any]] = []
-        for group_value, group_df in data.groupby(
+        for group_value, group_df in work_df.groupby(
             group_columns, dropna=False, sort=False
         ):
             if not isinstance(group_value, tuple):
@@ -385,8 +417,8 @@ class GroupPairMetrics(BaseBlock):
 
             pair_df = pd.DataFrame(
                 {
-                    "__x__": pd.to_numeric(group_df[params.x_column], errors="coerce"),
-                    "__y__": pd.to_numeric(group_df[params.y_column], errors="coerce"),
+                    "__x__": pd.to_numeric(group_df[x_column], errors="coerce"),
+                    "__y__": pd.to_numeric(group_df[y_column], errors="coerce"),
                 }
             ).dropna(subset=["__x__", "__y__"])
 
@@ -416,7 +448,7 @@ class GroupPairMetrics(BaseBlock):
         return BlockOutput(
             data=pd.DataFrame(rows),
             metadata={
-                "group_columns": group_columns,
+                "group_columns": group_columns_resolved,
                 "x_column": str(params.x_column),
                 "y_column": str(params.y_column),
                 "metrics": metrics,
@@ -463,27 +495,30 @@ class GroupMeanByAssignments(BaseBlock):
             )
 
         feature_df, assignments_df = data
-        if params.cluster_column not in assignments_df.columns:
+        if not column_exists(assignments_df, params.cluster_column):
             raise BlockValidationError(
                 f"Missing cluster column '{params.cluster_column}'."
             )
 
         features = feature_df.copy()
         features.index = features.index.astype(str)
-        assignments = assignments_df[[params.cluster_column]].copy()
-        assignments.index = assignments.index.astype(str)
+        assignments_cluster = column_values(assignments_df, params.cluster_column).copy()
+        assignments_cluster.index = assignments_cluster.index.astype(str)
 
-        common = features.index.intersection(assignments.index)
+        common = features.index.intersection(assignments_cluster.index)
         if len(common) == 0:
             raise BlockValidationError(
                 "No overlap between feature index and assignments index."
             )
 
-        merged = features.loc[common].copy()
-        merged[params.cluster_column] = (
-            assignments.loc[common, params.cluster_column].astype(int).values
+        cluster_col_out = (
+            INDEX_KEY if is_index_key(params.cluster_column) else params.cluster_column
         )
-        grouped = merged.groupby(params.cluster_column).mean(numeric_only=True)
+        merged = features.loc[common].copy()
+        merged[cluster_col_out] = (
+            assignments_cluster.loc[common].astype(int).values
+        )
+        grouped = merged.groupby(cluster_col_out).mean(numeric_only=True)
         return BlockOutput(data=grouped)
 
 
@@ -504,18 +539,28 @@ class CoverageByGroup(BaseBlock):
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
         if params is None:
             raise BlockValidationError("CoverageByGroup requires params.")
-        required = {params.group_col, params.entity_col}
-        missing = required - set(data.columns)
+        missing = [
+            c
+            for c in (params.group_col, params.entity_col)
+            if not column_exists(data, c)
+        ]
         if missing:
             raise BlockValidationError(
                 f"CoverageByGroup missing columns: {sorted(missing)}"
             )
 
         frame = data.copy()
-        frame[params.entity_col] = frame[params.entity_col].astype(str)
-        total_entities = max(int(frame[params.entity_col].nunique()), 1)
+        group_col = INDEX_KEY if is_index_key(params.group_col) else params.group_col
+        entity_col = (
+            INDEX_KEY if is_index_key(params.entity_col) else params.entity_col
+        )
+        if is_index_key(params.group_col) or is_index_key(params.entity_col):
+            if INDEX_KEY not in frame.columns:
+                frame[INDEX_KEY] = data.index.to_numpy()
+        frame[entity_col] = frame[entity_col].astype(str)
+        total_entities = max(int(frame[entity_col].nunique()), 1)
         grouped = (
-            frame.groupby(params.group_col)[params.entity_col]
+            frame.groupby(group_col)[entity_col]
             .nunique()
             .reset_index(name=params.output_count_col)
         )
@@ -545,13 +590,15 @@ class ExponentialPenaltyWeight(BaseBlock):
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
         if params is None:
             raise BlockValidationError("ExponentialPenaltyWeight requires params.")
-        if params.source_column not in data.columns:
+        if not column_exists(data, params.source_column):
             raise BlockValidationError(
                 f"Source column '{params.source_column}' not found."
             )
         frame = data.copy()
         frame[params.output_column] = _exp_penalty(
-            frame[params.source_column], clip_hi=params.clip_hi, scale=params.scale
+            column_values(data, params.source_column),
+            clip_hi=params.clip_hi,
+            scale=params.scale,
         )
         return BlockOutput(data=frame)
 
@@ -574,13 +621,13 @@ class LinearScaledWeight(BaseBlock):
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
         if params is None:
             raise BlockValidationError("LinearScaledWeight requires params.")
-        if params.source_column not in data.columns:
+        if not column_exists(data, params.source_column):
             raise BlockValidationError(
                 f"Source column '{params.source_column}' not found."
             )
         frame = data.copy()
         values = (
-            pd.to_numeric(frame[params.source_column], errors="coerce")
+            pd.to_numeric(column_values(data, params.source_column), errors="coerce")
             .fillna(params.min_value)
             .clip(lower=params.min_value, upper=params.max_value)
             .to_numpy(dtype=float)
@@ -686,18 +733,19 @@ class MinimumValueAcrossColumns(BaseBlock):
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
         if params is None:
             raise BlockValidationError("MinimumValueAcrossColumns requires params.")
-        cols = _parse_columns(params.columns)
-        if not cols:
+        raw_cols = _parse_columns(params.columns)
+        if not raw_cols:
             raise BlockValidationError(
                 "MinimumValueAcrossColumns requires at least one column."
             )
-        missing = [col for col in cols if col not in data.columns]
-        if missing:
-            raise BlockValidationError(
-                f"MinimumValueAcrossColumns missing columns: {missing}"
-            )
+        cols = require_columns(
+            data, raw_cols, "MinimumValueAcrossColumns", "columns"
+        )
         frame = data.copy()
-        matrix = frame[cols].apply(pd.to_numeric, errors="coerce").fillna(float("inf"))
+        series_list = [
+            pd.to_numeric(column_values(data, c), errors="coerce") for c in cols
+        ]
+        matrix = pd.concat(series_list, axis=1).fillna(float("inf"))
         frame[params.output_column] = matrix.min(axis=1)
         return BlockOutput(data=frame)
 
@@ -737,7 +785,10 @@ class MeanAcrossColumns(BaseBlock):
             block_name="MeanAcrossColumns",
         )
         frame = data.copy()
-        matrix = frame[cols].apply(pd.to_numeric, errors="coerce").fillna(float("nan"))
+        series_list = [
+            pd.to_numeric(column_values(data, c), errors="coerce") for c in cols
+        ]
+        matrix = pd.concat(series_list, axis=1).fillna(float("nan"))
         frame[params.output_column] = matrix.mean(axis=1)
         return BlockOutput(
             data=frame,
@@ -782,7 +833,10 @@ class CountNonNullAcrossColumns(BaseBlock):
         )
 
         frame = data.copy()
-        frame[params.output_column] = frame[cols].notna().sum(axis=1).astype(int)
+        notna_columns = pd.concat(
+            [column_values(data, c).notna() for c in cols], axis=1
+        )
+        frame[params.output_column] = notna_columns.sum(axis=1).astype(int)
         return BlockOutput(
             data=frame,
             metadata={
@@ -849,15 +903,15 @@ class AssignTierByThresholds(BaseBlock):
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
         if params is None:
             raise BlockValidationError("AssignTierByThresholds requires params.")
-        if params.source_column not in data.columns:
+        if not column_exists(data, params.source_column):
             raise BlockValidationError(
                 f"Source column '{params.source_column}' not found."
             )
         group_column = str(getattr(params, "group_column", "") or "").strip()
-        if group_column and group_column not in data.columns:
+        if group_column and not column_exists(data, group_column):
             raise BlockValidationError(f"Group column '{group_column}' not found.")
 
-        values = pd.to_numeric(data[params.source_column], errors="coerce")
+        values = pd.to_numeric(column_values(data, params.source_column), errors="coerce")
         explicit_thresholds = _parse_float_list(getattr(params, "thresholds", ""))
         percentiles = _parse_float_list(getattr(params, "percentiles", ""))
         configured_modes = [
@@ -930,7 +984,7 @@ class AssignTierByThresholds(BaseBlock):
             label_series = pd.Series(index=result.index, dtype="object")
             rank_series = pd.Series(index=result.index, dtype="float64")
             group_thresholds: dict[str, list[float]] = {}
-            group_series = data[group_column]
+            group_series = column_values(data, group_column)
             for group_value, group_index in group_series.groupby(
                 group_series, dropna=False, sort=False
             ).groups.items():

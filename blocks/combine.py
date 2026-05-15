@@ -10,6 +10,7 @@ from backend.block import (
     InsufficientInputs,
     block_param,
 )
+from blocks._columns import column_exists, is_index_key
 
 
 class AppendDatasets(BaseBlock):
@@ -39,7 +40,7 @@ class AppendDatasets(BaseBlock):
 
 class MergeDatasets(BaseBlock):
     name = "Merge Datasets"
-    version = "1.0.0"
+    version = "1.1.0"
     category = "Operator"
     description = "Merge two DataFrames using pandas merge semantics."
     n_inputs = 2
@@ -49,11 +50,15 @@ class MergeDatasets(BaseBlock):
         "Input 0 is treated as the left table and input 1 as the right table.",
         "Rows are matched by exact equality on the configured join key column.",
         "Columns from both inputs are preserved using pandas merge semantics.",
+        "Set on='index' to join on the DataFrame index of both inputs.",
     ]
 
     class Params(BlockParams):
         on: str = block_param(
-            description="Join key column present in both inputs.",
+            description=(
+                "Join key column present in both inputs. "
+                "Use 'index' to join on the DataFrame index of both inputs."
+            ),
             example="id",
         )
         how: str = block_param(
@@ -71,5 +76,27 @@ class MergeDatasets(BaseBlock):
     ) -> BlockOutput:
         if params is None:
             raise BlockValidationError("MergeDatasets requires params.")
-        merged = data[0].merge(data[1], on=params.on, how=params.how)  # pyright: ignore[reportArgumentType]
+
+        left, right = data[0], data[1]
+        on = str(params.on or "").strip()
+        if not on:
+            raise BlockValidationError("MergeDatasets: 'on' is required.")
+
+        if is_index_key(on):
+            merged = left.merge(
+                right,
+                left_index=True,
+                right_index=True,
+                how=params.how,  # pyright: ignore[reportArgumentType]
+            )
+        else:
+            if not column_exists(left, on):
+                raise BlockValidationError(
+                    f"MergeDatasets: column '{on}' not found on the left input."
+                )
+            if not column_exists(right, on):
+                raise BlockValidationError(
+                    f"MergeDatasets: column '{on}' not found on the right input."
+                )
+            merged = left.merge(right, on=on, how=params.how)  # pyright: ignore[reportArgumentType]
         return BlockOutput(data=merged)

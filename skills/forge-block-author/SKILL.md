@@ -42,6 +42,7 @@ Create blocks for Forge by following the existing backend contract instead of in
 - If the block writes files as a side effect, mark it `always_execute = True` only when checkpoint reuse would be incorrect.
 - Treat `describe_block_type` as a user-facing contract. If an agent would need to inspect the block source to understand input ordering, index alignment, appended columns, categorical vs numeric behavior, or pass-through semantics, add that detail to `usage_notes` or field metadata on `Params`.
 - Visualization blocks return artifacts via `BlockOutput.images`. Supported types: matplotlib `Figure` (saved as PNG), plotly `Figure` (saved as interactive HTML), or a `str`/`Path` to a file whose suffix is one of `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.html`. Other suffixes are rejected at checkpoint time.
+- Any column-key param accepts the literal sentinel `"index"` to mean the DataFrame's row index instead of a named column. Use `blocks._columns` helpers (`column_exists`, `column_values`, `require_column`, `require_columns`, `is_index_key`) when reading column-key params so the sentinel is honored consistently. The sentinel is strict (case-sensitive, trimmed) and always wins — even if a column literally named `"index"` exists on the frame.
 - Requiredness must come from the `Params` model itself, not blank-string defaults or separate override tables.
 - When you add enum-like or otherwise subtle params, make sure the field descriptions and examples are discoverable through `describe_block_type.param_schema`.
 

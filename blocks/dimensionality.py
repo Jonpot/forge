@@ -13,6 +13,7 @@ from backend.block import (
     ProgressBar,
     block_param,
 )
+from blocks._columns import column_values, require_columns
 
 
 def _parse_columns(value: Any) -> list[str]:
@@ -86,15 +87,13 @@ class UMAPEmbed(BaseBlock):
                 "UMAPEmbed requires 'umap-learn'. Install it in your environment."
             ) from exc
 
-        selected_cols = _parse_columns(params.columns)
-        if not selected_cols:
+        raw_cols = _parse_columns(params.columns)
+        if not raw_cols:
             selected_cols = data.select_dtypes(include="number").columns.tolist()
+        else:
+            selected_cols = require_columns(data, raw_cols, "UMAPEmbed", "columns")
         if not selected_cols:
             raise BlockValidationError("No numeric columns available for UMAP.")
-
-        missing = [col for col in selected_cols if col not in data.columns]
-        if missing:
-            raise BlockValidationError(f"UMAP columns not found: {missing}")
 
         reducer = umap.UMAP(
             n_neighbors=int(params.n_neighbors),
@@ -102,7 +101,11 @@ class UMAPEmbed(BaseBlock):
             min_dist=float(params.min_dist),
             random_state=int(params.random_state),
         )
-        emb = reducer.fit_transform(data[selected_cols].to_numpy(dtype=float))
+        feature_matrix = pd.concat(
+            [pd.to_numeric(column_values(data, c), errors="coerce") for c in selected_cols],
+            axis=1,
+        ).to_numpy(dtype=float)
+        emb = reducer.fit_transform(feature_matrix)
 
         result = data.copy()
         if not isinstance(emb, np.ndarray) or emb.shape[1] != params.n_components:

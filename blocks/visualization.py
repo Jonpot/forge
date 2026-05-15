@@ -18,6 +18,11 @@ from backend.block import (
     InsufficientInputs,
     block_param,
 )
+from blocks._columns import (
+    column_values as _column_values,
+    is_index_key as _is_index_key,
+    require_column as _require_column_shared,
+)
 
 
 _WINDOWS_RESERVED_FILENAMES = {
@@ -53,12 +58,8 @@ def _require_column(
     block_name: str,
     label: str,
 ) -> str:
-    clean = str(column_name).strip()
-    if not clean:
-        raise BlockValidationError(f"{label} is required.")
-    if clean not in data.columns:
-        raise BlockValidationError(f"Column '{clean}' not found.")
-    return clean
+    # Delegates to the shared helper, which accepts the "index" sentinel.
+    return _require_column_shared(data, column_name, block_name, label)
 
 
 def _normalize_color_mode(value: Any, block_name: str) -> str:
@@ -74,8 +75,8 @@ def _resolve_color_series(
     plot_df: pd.DataFrame,
     color_column: str,
 ) -> tuple[str, pd.Series]:
-    if color_column == "index":
-        plot_df["_color"] = pd.Series(plot_df.index, index=plot_df.index)
+    if _is_index_key(color_column):
+        plot_df["_color"] = _column_values(plot_df, color_column).to_numpy()
         return "_color", plot_df["_color"]
     return color_column, plot_df[color_column]
 
@@ -359,10 +360,12 @@ def _prepare_scatter_plot_df(
     block_name: str,
 ) -> pd.DataFrame:
     plot_df = data.copy()
-    plot_df["_x"] = pd.to_numeric(plot_df[x_column], errors="coerce")
-    plot_df["_y"] = pd.to_numeric(plot_df[y_column], errors="coerce")
+    plot_df["_x"] = pd.to_numeric(_column_values(plot_df, x_column), errors="coerce")
+    plot_df["_y"] = pd.to_numeric(_column_values(plot_df, y_column), errors="coerce")
     if size_column:
-        size_values = pd.to_numeric(plot_df[size_column], errors="coerce")
+        size_values = pd.to_numeric(
+            _column_values(plot_df, size_column), errors="coerce"
+        )
         size_values = size_values.fillna(float(marker_size))
         plot_df["_size"] = np.clip(
             size_values.to_numpy(dtype=float), a_min=1.0, a_max=None

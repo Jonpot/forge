@@ -59,6 +59,14 @@ PLUGIN METADATA
 Each .py file is treated as a plugin file. Optionally declare PLUGIN_TITLE and
 PLUGIN_DESCRIPTION to control how the plugin appears in the Manage Plugins UI.
 
+INDEX SENTINEL
+--------------
+Built-in blocks accept the literal string "index" in any column-key parameter
+to refer to the DataFrame's row index instead of a named column. Custom blocks
+can opt in to the same convention by reading column-key params through the
+helpers in `blocks._columns` (column_exists, column_values, require_column,
+require_columns, is_index_key).
+
 USAGE
 -----
 * Drag this .py file onto the Forge canvas to install.
