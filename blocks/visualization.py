@@ -559,6 +559,29 @@ def _export_visualization(plot: Any, params: Any, plot_title: str) -> str | None
     )
 
 
+class _PlotlyAsStaticPng:
+    """Adapter that makes a Plotly figure look like a matplotlib Figure to the
+    checkpoint store and `_export_visualization`.
+
+    The checkpoint store dispatches on ``hasattr(image, "savefig")`` before
+    ``hasattr(image, "write_html")``; ``_export_visualization`` reverses that
+    order. Either way, exposing only ``savefig`` here forces the PNG branch,
+    delegating the actual rasterization to ``plotly.write_image`` (kaleido).
+    Blocks use this when an ``interactive=False`` toggle should produce a
+    static raster instead of an interactive HTML artifact.
+    """
+
+    __slots__ = ("_fig",)
+
+    def __init__(self, fig: Any) -> None:
+        self._fig = fig
+
+    def savefig(self, path: Any, **_: Any) -> None:
+        # `_` swallows matplotlib-specific kwargs (e.g. bbox_inches="tight")
+        # that plotly's write_image does not accept.
+        self._fig.write_image(str(path), format="png")  # type: ignore[call-arg]
+
+
 def _visual_output(
     data: pd.DataFrame,
     plot: Any,
@@ -1037,7 +1060,7 @@ class MatrixLineChart(VisualizationBlock):
 
 class MatrixScatterPlot(VisualizationBlock):
     name = "Matrix Scatter Plot"
-    version = "1.0.0"
+    version = "1.1.0"
     category = "Visualization"
     description = "Render a 2D scatter plot using numeric x and y columns."
     input_labels = ["Matrix"]
@@ -1046,6 +1069,7 @@ class MatrixScatterPlot(VisualizationBlock):
         "`color_mode='auto'` treats numeric dtype columns as continuous and string/object columns as categorical.",
         "Set `color_mode='categorical'` when cluster IDs are numeric labels but should render as a discrete legend.",
         "When there are more than 40 categories, Forge collapses the legend into a category-code colorbar.",
+        "Set `interactive=True` to render the plot with Plotly (hover/pan/zoom) instead of a static matplotlib PNG.",
     ]
     presets = [
         {
@@ -1059,11 +1083,31 @@ class MatrixScatterPlot(VisualizationBlock):
                 "color_mode": "categorical",
                 "title": "Cluster Scatter Plot",
             },
-        }
+        },
+        {
+            "id": "interactive_cluster_scatter",
+            "label": "Interactive Cluster Scatter",
+            "description": "Plotly-rendered scatter with cluster assignments encoded by color.",
+            "params": {
+                "x_column": "feature_a",
+                "y_column": "feature_b",
+                "color_column": "cluster_id",
+                "color_mode": "categorical",
+                "title": "Interactive Cluster Scatter",
+                "interactive": True,
+            },
+        },
     ]
 
     class Params(ScatterPlotParams):
-        pass
+        interactive: bool = block_param(
+            False,
+            description=(
+                "Render with Plotly (hover/pan/zoom, saved as interactive HTML) "
+                "instead of a static matplotlib PNG."
+            ),
+            example=True,
+        )
 
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
         if params is None:
@@ -1096,6 +1140,40 @@ class MatrixScatterPlot(VisualizationBlock):
             "MatrixScatterPlot",
         )
 
+        plot_title = _normalize_plot_title(params.title, f"{y_column} vs {x_column}")
+        interactive = bool(getattr(params, "interactive", False))
+
+        if interactive:
+            fig, color_mode_used = _build_plotly_scatter_2d(
+                data=data,
+                plot_df=plot_df,
+                x_column=x_column,
+                y_column=y_column,
+                color_column=color_column,
+                size_column=size_column,
+                color_mode=str(getattr(params, "color_mode", "auto")),
+                cmap=str(params.cmap),
+                alpha=float(params.alpha),
+                marker_size=float(params.marker_size),
+                plot_title=plot_title,
+                block_name="MatrixScatterPlot",
+            )
+            return _visual_output(
+                data,
+                fig,
+                params,
+                plot_title,
+                metadata={
+                    "x_column": x_column,
+                    "y_column": y_column,
+                    "color_column": color_column or None,
+                    "color_mode_used": color_mode_used,
+                    "size_column": size_column or None,
+                    "n_rows_plotted": int(plot_df.shape[0]),
+                    "interactive": True,
+                },
+            )
+
         import matplotlib
 
         matplotlib.use("Agg")
@@ -1112,8 +1190,6 @@ class MatrixScatterPlot(VisualizationBlock):
             alpha=float(params.alpha),
             block_name="MatrixScatterPlot",
         )
-
-        plot_title = _normalize_plot_title(params.title, f"{y_column} vs {x_column}")
         ax.set_title(plot_title)
         ax.set_xlabel(x_column)
         ax.set_ylabel(y_column)
@@ -1130,8 +1206,89 @@ class MatrixScatterPlot(VisualizationBlock):
                 "color_mode_used": color_mode_used,
                 "size_column": size_column or None,
                 "n_rows_plotted": int(plot_df.shape[0]),
+                "interactive": False,
             },
         )
+
+
+def _build_plotly_scatter_2d(
+    *,
+    data: pd.DataFrame,
+    plot_df: pd.DataFrame,
+    x_column: str,
+    y_column: str,
+    color_column: str,
+    size_column: str,
+    color_mode: str,
+    cmap: str,
+    alpha: float,
+    marker_size: float,
+    plot_title: str,
+    block_name: str,
+) -> tuple[Any, str | None]:
+    """Build a Plotly Express 2D scatter figure with the project's color/size
+    semantics. Returns ``(figure, color_mode_used)``."""
+    try:
+        import plotly.express as px
+    except Exception as exc:
+        raise BlockValidationError(
+            f"{block_name} with interactive=True requires plotly. "
+            "Install dependencies and retry."
+        ) from exc
+
+    figure_kwargs: dict[str, Any] = {
+        "x": "_x",
+        "y": "_y",
+        "title": plot_title,
+    }
+    color_mode_used: str | None = None
+    if color_column:
+        normalized_color_mode = _normalize_color_mode(color_mode, block_name)
+        _, color_values_raw = _resolve_color_series(plot_df, color_column)
+        numeric_color = pd.to_numeric(color_values_raw, errors="coerce")
+        non_null_color = color_values_raw.notna()
+        can_use_numeric_scale = bool(non_null_color.any()) and bool(
+            numeric_color[non_null_color].notna().all()
+        )
+        wants_numeric_scale = _wants_numeric_color_scale(
+            color_values_raw, normalized_color_mode
+        )
+        if normalized_color_mode == "numeric" and not can_use_numeric_scale:
+            raise BlockValidationError(
+                f"{block_name} could not interpret '{color_column}' as numeric colors."
+            )
+        if wants_numeric_scale and can_use_numeric_scale:
+            plot_df = plot_df.copy()
+            plot_df["_color_numeric"] = numeric_color
+            figure_kwargs["color"] = "_color_numeric"
+            figure_kwargs["color_continuous_scale"] = cmap
+            color_mode_used = "numeric"
+        else:
+            plot_df = plot_df.copy()
+            plot_df["_color_display"] = color_values_raw.astype("string").fillna("null")
+            figure_kwargs["color"] = "_color_display"
+            color_mode_used = "categorical"
+    if size_column:
+        figure_kwargs["size"] = "_size"
+
+    # Hover shows the original (non-helper) columns so users can identify points.
+    helper_cols = {"_x", "_y", "_size", "_color_numeric", "_color_display"}
+    hover_cols = [c for c in data.columns if c not in helper_cols]
+    if hover_cols:
+        figure_kwargs["hover_data"] = {col: True for col in hover_cols}
+
+    fig = px.scatter(plot_df, **figure_kwargs)
+    marker_update: dict[str, Any] = {"opacity": alpha}
+    if not size_column:
+        marker_update["size"] = marker_size ** 0.5
+    fig.update_traces(marker=marker_update)
+    fig.update_layout(
+        xaxis_title=x_column,
+        yaxis_title=y_column,
+        legend_title_text=color_column or None,
+        margin=dict(l=50, r=20, t=50, b=50),
+    )
+    return fig, color_mode_used
 
 
 class HighlightedScatterPlot(VisualizationBlock):
@@ -2186,7 +2343,7 @@ class AnnotatePlotWithArrows(VisualizationBlock):
 
 class Matrix3DScatterPlot(VisualizationBlock):
     name = "Matrix 3D Scatter Plot"
-    version = "1.0.0"
+    version = "1.1.0"
     category = "Visualization"
     description = "Render a 3D scatter plot using Plotly."
     input_labels = ["Matrix"]
@@ -2194,7 +2351,7 @@ class Matrix3DScatterPlot(VisualizationBlock):
     usage_notes = [
         "`color_mode='auto'` treats numeric dtype columns as continuous and string/object columns as categorical.",
         "Set `color_mode='categorical'` when numeric-looking cluster IDs should render as discrete categories.",
-        "The image is rendered through Plotly and stored as a checkpoint-backed artifact.",
+        "Defaults to a static PNG (rendered via Plotly + kaleido). Set `interactive=True` to save as live HTML and rotate/zoom in the canvas.",
     ]
 
     class Params(VisualizationParams):
@@ -2228,6 +2385,14 @@ class Matrix3DScatterPlot(VisualizationBlock):
         marker_size: float = 6.0
         opacity: float = 0.75
         title: str = "3D Scatter Plot"
+        interactive: bool = block_param(
+            False,
+            description=(
+                "Save the figure as interactive HTML (rotate/zoom in the canvas) "
+                "instead of a static PNG."
+            ),
+            example=True,
+        )
 
     def execute(self, data: pd.DataFrame, params: Params | None = None) -> BlockOutput:
         if params is None:
@@ -2333,9 +2498,12 @@ class Matrix3DScatterPlot(VisualizationBlock):
             }
         )
 
+        interactive = bool(getattr(params, "interactive", False))
+        artifact: Any = fig if interactive else _PlotlyAsStaticPng(fig)
+
         return _visual_output(
             data,
-            fig,
+            artifact,
             params,
             plot_title,
             metadata={
@@ -2347,5 +2515,6 @@ class Matrix3DScatterPlot(VisualizationBlock):
                 "size_column": size_column or None,
                 "n_rows_plotted": int(plot_df.shape[0]),
                 "render_backend": "plotly",
+                "interactive": interactive,
             },
         )

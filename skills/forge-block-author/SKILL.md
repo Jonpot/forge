@@ -41,6 +41,7 @@ Create blocks for Forge by following the existing backend contract instead of in
 - Do not bypass the existing registry or provenance model.
 - If the block writes files as a side effect, mark it `always_execute = True` only when checkpoint reuse would be incorrect.
 - Treat `describe_block_type` as a user-facing contract. If an agent would need to inspect the block source to understand input ordering, index alignment, appended columns, categorical vs numeric behavior, or pass-through semantics, add that detail to `usage_notes` or field metadata on `Params`.
+- Visualization blocks return artifacts via `BlockOutput.images`. Supported types: matplotlib `Figure` (saved as PNG), plotly `Figure` (saved as interactive HTML), or a `str`/`Path` to a file whose suffix is one of `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.html`. Other suffixes are rejected at checkpoint time.
 - Requiredness must come from the `Params` model itself, not blank-string defaults or separate override tables.
 - When you add enum-like or otherwise subtle params, make sure the field descriptions and examples are discoverable through `describe_block_type.param_schema`.
 
