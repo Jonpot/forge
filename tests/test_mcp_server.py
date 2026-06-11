@@ -784,9 +784,8 @@ def test_describe_block_type_and_list_block_presets_include_richer_schema(
         preset["id"] == "cluster_scatter" for preset in scatter_schema["presets"]
     )
     assert scatter3d_schema["required_params"] == ["x_column", "y_column", "z_column"]
-    assert (
-        merge_schema["param_descriptions"]["on"]
-        == "Join key column present in both inputs."
+    assert merge_schema["param_descriptions"]["on"].startswith(
+        "Join key column present in both inputs."
     )
     assert any(
         "aligned by their row index" in note

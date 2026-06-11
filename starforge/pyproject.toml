@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# PyPI name `starforge` is squatted by a dormant Galaxy tool (see DESIGN.md §4);
+# the import name is still `starforge`.
+name = "starforge-kernel"
+version = "0.1.0"
+description = "*Forge — pipeline canvas, checkpointing, and stale/hydrate execution for the repo you already have open"
+authors = [{ name = "Jonathan Potter" }]
+license = "Apache-2.0"
+requires-python = ">=3.10"
+# Intentionally empty: the decorator must import in microseconds inside user
+# production code, and the kernel runs stdlib-only. pandas/numpy/pyarrow are
+# probed lazily in workers and used only if the workspace env provides them.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Jonpot/forge"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pandas>=2.0", "pyarrow>=15.0", "numpy>=1.26"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,62 @@
+{
+  "name": "starforge",
+  "displayName": "*Forge",
+  "description": "Pipeline canvas, checkpointing, and stale/hydrate execution for the repo you already have open.",
+  "version": "0.1.0",
+  "publisher": "starforge",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "https://github.com/Jonpot/forge" },
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Data Science", "Visualization", "Other"],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "starforge.canvas",
+        "displayName": "*Forge Canvas",
+        "selector": [{ "filenamePattern": "*.forge" }],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      { "command": "starforge.newPipeline", "title": "*Forge: New Pipeline" },
+      { "command": "starforge.rescan", "title": "*Forge: Rescan Workspace Blocks" },
+      { "command": "starforge.restartKernel", "title": "*Forge: Restart Kernel" }
+    ],
+    "configuration": {
+      "title": "*Forge",
+      "properties": {
+        "starforge.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python interpreter for the *Forge kernel. Leave empty to use the ms-python extension's active interpreter, falling back to 'python'. The starforge-kernel package must be installed in this environment."
+        },
+        "starforge.pickleEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the pickle serializer tier for checkpoint outputs that have no native serializer. When off, such outputs are ephemeral: they flow within a run but downstream nodes recompute in future runs."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "vscode:prepublish": "node esbuild.mjs --production"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "reactflow": "^11.11.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.21.5",
+    "typescript": "^5.5.3"
+  }
+}

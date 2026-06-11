@@ -1,0 +1,375 @@
+/* *Forge canvas — visual language ported from the desktop app
+   (frontend/tailwind.config.js + src/styles/globals.css). The canvas keeps
+   Forge's identity rather than the editor theme; VS Code supplies fonts. */
+
+:root {
+  --forge-bg:          #0f1117;
+  --forge-surface:     #1a1d27;
+  --forge-border:      #2a2d3a;
+  --forge-border-mid:  #3a3d4a;
+  --forge-accent:      #6366f1;
+  --forge-accent-lite: #818cf8;
+  --forge-text:        #e2e8f0;
+  --forge-muted:       #64748b;
+  --forge-stale:       #eab308;
+  --forge-running:     #3b82f6;
+  --forge-complete:    #22c55e;
+  --forge-error:       #ef4444;
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+html, body, #root { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+body {
+  font-family: var(--vscode-font-family, ui-sans-serif, system-ui, "Segoe UI", sans-serif);
+  font-size: 13px;
+  color: var(--forge-text);
+  background: var(--forge-bg);
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--forge-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--forge-border-mid); }
+
+.sf-app { display: flex; height: 100vh; }
+
+/* ------------------------------------------------------------- palette */
+.sf-palette {
+  width: 224px; min-width: 224px;
+  border-right: 1px solid var(--forge-border);
+  overflow-y: auto; padding: 10px;
+  background: var(--forge-surface);
+}
+.sf-palette-head { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.sf-title { font-weight: 600; color: var(--forge-text); }
+.sf-search {
+  background: var(--forge-bg); color: var(--forge-text);
+  border: 1px solid var(--forge-border);
+  padding: 4px 8px; border-radius: 4px; outline: none;
+  transition: border-color 150ms;
+}
+.sf-search:focus { border-color: var(--forge-accent); }
+.sf-search::placeholder { color: var(--forge-muted); }
+.sf-category-name {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  margin: 12px 0 4px;
+}
+.sf-palette-block {
+  padding: 6px 9px; margin: 3px 0; border-radius: 5px; cursor: grab;
+  background: var(--forge-bg);
+  border: 1px solid var(--forge-border);
+  color: var(--forge-text); font-size: 12px;
+  transition: border-color 150ms, background-color 150ms, transform 100ms;
+}
+.sf-palette-block:hover {
+  border-color: var(--forge-accent);
+  background: var(--forge-border);
+}
+.sf-palette-block:active { cursor: grabbing; transform: scale(0.98); }
+.sf-empty, .sf-hint { color: var(--forge-muted); font-size: 12px; padding: 6px 2px; }
+.sf-error {
+  color: var(--forge-error); font-size: 12px;
+  padding: 4px 8px; margin: 4px 0;
+  border-left: 2px solid var(--forge-error);
+  background: rgba(239, 68, 68, 0.08);
+  border-radius: 0 4px 4px 0;
+}
+.sf-scan-warning { font-size: 11px; color: var(--forge-muted); padding: 2px 4px; }
+
+/* -------------------------------------------------------------- canvas */
+.sf-canvas { flex: 1; position: relative; background: var(--forge-bg); }
+.sf-toolbar {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 5;
+  display: flex; align-items: center; gap: 12px;
+  padding: 7px 14px;
+  background: rgba(26, 29, 39, 0.85);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--forge-border);
+}
+.sf-doc-name { font-weight: 600; color: var(--forge-text); }
+.sf-summary { color: var(--forge-muted); font-size: 12px; flex: 1; }
+.sf-btn {
+  background: var(--forge-accent); color: #fff;
+  border: none; border-radius: 5px; padding: 5px 16px;
+  cursor: pointer; font-size: 12px; font-weight: 600;
+  transition: background-color 150ms, transform 100ms;
+}
+.sf-btn:disabled { opacity: 0.4; cursor: default; }
+.sf-btn:hover:not(:disabled) { background: var(--forge-accent-lite); }
+.sf-btn:active:not(:disabled) { transform: scale(0.97); }
+.sf-cancel { background: var(--forge-error); }
+.sf-cancel:hover:not(:disabled) { background: #f87171; }
+.sf-link {
+  background: none; color: var(--forge-accent-lite);
+  padding: 0; font-size: 12px; font-weight: 500;
+}
+.sf-link:hover:not(:disabled) { background: none; text-decoration: underline; }
+
+/* React Flow chrome, matching desktop globals.css */
+.react-flow { background: var(--forge-bg); }
+.react-flow__controls { bottom: 1rem !important; left: 1rem !important; box-shadow: none; }
+.react-flow__controls-button {
+  background: var(--forge-surface) !important;
+  border-bottom: 1px solid var(--forge-border) !important;
+  fill: var(--forge-muted) !important;
+  transition: background-color 150ms, fill 150ms !important;
+}
+.react-flow__controls-button:hover {
+  background: var(--forge-border) !important;
+  fill: var(--forge-text) !important;
+}
+.react-flow__minimap {
+  bottom: 1rem !important; right: 1rem !important;
+  background: var(--forge-surface) !important;
+  border: 1px solid var(--forge-border); border-radius: 6px;
+}
+.react-flow__edge-path {
+  stroke: var(--forge-accent); stroke-width: 2;
+  transition: stroke 150ms, filter 150ms;
+}
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--forge-accent-lite);
+  filter: drop-shadow(0 0 4px rgba(99, 102, 241, 0.4));
+}
+/* Selected edges stay visibly selected, hovered or not (after the hover rule
+   so it wins at equal specificity). */
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge.selected:hover .react-flow__edge-path {
+  stroke: var(--forge-accent-lite);
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 5px rgba(129, 140, 248, 0.65));
+}
+.react-flow__connection-path { stroke: var(--forge-accent); stroke-width: 2; }
+.react-flow__selection {
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid var(--forge-accent);
+  border-radius: 2px;
+}
+
+/* ---------------------------------------------------------------- node */
+.sf-node {
+  min-width: 180px; max-width: 240px;
+  border-radius: 8px;
+  background: var(--forge-surface);
+  border: 2px solid var(--forge-border);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -4px rgba(0, 0, 0, 0.4);
+  transition: border-color 200ms, box-shadow 200ms;
+}
+.sf-node:hover { box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5); }
+.sf-node.sf-stale { border-color: var(--forge-stale); }
+.sf-node.sf-fresh { border-color: var(--forge-complete); }
+.sf-node.sf-running { border-color: var(--forge-running); }
+.sf-node.sf-failed, .sf-node.sf-problem { border-color: var(--forge-error); }
+.sf-node.sf-blocked { border-color: var(--forge-stale); border-style: dashed; }
+.sf-node.sf-cancelled { border-color: var(--forge-error); border-style: dashed; }
+/* Selection wins over hover, full stop — a selected node never loses its
+   ring while the pointer is on it. */
+.sf-node.sf-node-selected,
+.sf-node.sf-node-selected:hover {
+  box-shadow: 0 0 0 1px var(--forge-bg), 0 0 0 3px var(--forge-accent),
+    0 20px 25px -5px rgba(0, 0, 0, 0.5);
+}
+
+.sf-node-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px 6px 0 0;
+  background: rgba(42, 45, 58, 0.4); /* idle: border @ 40% */
+}
+.sf-head-stale { background: rgba(234, 179, 8, 0.2); }
+.sf-head-running { background: rgba(59, 130, 246, 0.2); }
+.sf-head-fresh { background: rgba(34, 197, 94, 0.2); }
+.sf-head-failed, .sf-head-problem, .sf-head-cancelled { background: rgba(239, 68, 68, 0.2); }
+.sf-node-label {
+  color: var(--forge-text); font-weight: 600; font-size: 13px; line-height: 1.25;
+  overflow-wrap: break-word; min-width: 0;
+}
+.sf-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  background: var(--forge-muted);
+}
+.sf-dot.sf-stale, .sf-dot.sf-blocked { background: var(--forge-stale); }
+.sf-dot.sf-fresh { background: var(--forge-complete); }
+.sf-dot.sf-running { background: var(--forge-running); animation: sf-pulse 1.2s ease-in-out infinite; }
+.sf-dot.sf-failed, .sf-dot.sf-problem, .sf-dot.sf-cancelled { background: var(--forge-error); }
+@keyframes sf-pulse { 50% { opacity: 0.35; } }
+
+/* Param/output rows; each row is the positioning context for its handle. */
+.sf-rows { padding: 6px 0; }
+.sf-row {
+  position: relative; font-size: 11px;
+  height: 20px; line-height: 20px; padding: 0 12px;
+  white-space: nowrap;
+}
+.sf-row-output { text-align: right; }
+.sf-param-name, .sf-output-name { color: var(--forge-text); opacity: 0.85; }
+.sf-param-value {
+  color: var(--forge-muted); margin-left: 6px;
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace); font-size: 10px;
+  overflow: hidden; text-overflow: ellipsis; max-width: 110px; display: inline-block;
+  vertical-align: bottom;
+}
+.sf-row .react-flow__handle {
+  width: 10px; height: 10px;
+  top: 50%; transform: translateY(-50%);
+  background: var(--forge-accent);
+  border: 2px solid var(--forge-accent-lite);
+  transition: box-shadow 150ms, background-color 150ms;
+}
+.sf-row .react-flow__handle-left { left: -6px; }
+.sf-row .react-flow__handle-right { right: -6px; }
+.sf-row .react-flow__handle:hover {
+  background: var(--forge-accent-lite);
+  box-shadow: 0 0 6px rgba(129, 140, 248, 0.7);
+}
+
+.sf-node-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 12px 7px;
+  border-top: 1px solid var(--forge-border);
+}
+.sf-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 500;
+  padding: 2px 6px; border-radius: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;
+}
+.sf-status-label { font-size: 10px; color: var(--forge-muted); flex-shrink: 0; }
+
+.sf-problem-strip {
+  font-size: 10px; color: var(--forge-error);
+  padding: 4px 12px 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 236px;
+}
+
+/* ----------------------------------------------------------- inspector */
+.sf-inspector {
+  width: 270px; min-width: 270px;
+  border-left: 1px solid var(--forge-border);
+  background: var(--forge-surface);
+  padding: 12px; overflow-y: auto;
+}
+.sf-inspector-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+.sf-docstring { color: var(--forge-muted); font-size: 12px; line-height: 1.45; }
+.sf-section {
+  margin: 16px 0 6px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--forge-muted);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.sf-field { display: flex; flex-direction: column; margin-bottom: 9px; }
+.sf-field label { font-size: 12px; margin-bottom: 3px; color: var(--forge-text); }
+.sf-annotation { color: var(--forge-muted); font-family: var(--vscode-editor-font-family, monospace); }
+.sf-field input {
+  background: var(--forge-bg); color: var(--forge-text);
+  border: 1px solid var(--forge-border);
+  padding: 4px 8px; border-radius: 4px; outline: none;
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 12px;
+  transition: border-color 150ms;
+}
+.sf-field input:focus { border-color: var(--forge-accent); }
+.sf-field input::placeholder { color: var(--forge-muted); }
+.sf-wired-tag {
+  font-size: 11px; color: var(--forge-accent-lite);
+  border: 1px solid var(--forge-accent);
+  border-radius: 9px; padding: 1px 9px; width: fit-content;
+  background: rgba(99, 102, 241, 0.12);
+}
+.sf-manifest { font-size: 12px; }
+.sf-output-block { margin-bottom: 10px; }
+.sf-output-row { padding: 2px 0; color: var(--forge-text); opacity: 0.85; }
+.sf-output-row code { color: var(--forge-accent-lite); }
+.sf-preview-meta { color: var(--forge-muted); font-size: 11px; margin: 2px 0; }
+.sf-pre, .sf-traceback {
+  background: var(--forge-bg);
+  border: 1px solid var(--forge-border);
+  border-radius: 5px; padding: 7px;
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace); font-size: 11px;
+  color: var(--forge-text);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow: auto; margin: 4px 0;
+}
+.sf-traceback { color: var(--forge-error); max-height: 180px; }
+.sf-table-scroll { overflow-x: auto; max-width: 100%; }
+.sf-table {
+  border-collapse: collapse; font-size: 11px;
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+}
+.sf-table th, .sf-table td {
+  border: 1px solid var(--forge-border);
+  padding: 2px 7px; text-align: right; max-width: 110px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--forge-text);
+}
+.sf-table th { background: var(--forge-bg); font-weight: 600; color: var(--forge-accent-lite); }
+.sf-table-index { color: var(--forge-muted); }
+
+/* ------------------------------------------------------ figures & lightbox */
+.sf-thumb {
+  display: block; max-width: 100%; border-radius: 5px;
+  border: 1px solid var(--forge-border);
+  cursor: zoom-in;
+  transition: border-color 150ms;
+}
+.sf-thumb:hover { border-color: var(--forge-accent); }
+.sf-thumb-inspector { max-width: 100%; margin: 4px 0; }
+
+/* On-node figure carousel: image stays inside the node; pager floats. */
+.sf-carousel { position: relative; padding: 2px 8px 6px; }
+.sf-carousel-img { max-height: 170px; margin: 0 auto; }
+.sf-carousel .sf-figure-chip { display: block; margin: 2px auto; }
+.sf-carousel-bar {
+  position: absolute; right: 12px; bottom: 10px;
+  display: flex; align-items: center; gap: 3px;
+  background: rgba(26, 29, 39, 0.88);
+  border: 1px solid var(--forge-border); border-radius: 4px;
+  padding: 0 4px; font-size: 10px; color: var(--forge-muted);
+}
+.sf-carousel-bar button {
+  background: none; border: none; cursor: pointer;
+  color: var(--forge-accent-lite); font-size: 13px; line-height: 1.3; padding: 0 3px;
+}
+.sf-carousel-bar button:hover { color: var(--forge-text); }
+.sf-thumb-grid { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+.sf-thumb-grid .sf-thumb { max-width: 116px; max-height: 90px; }
+.sf-figure-chip {
+  background: rgba(99, 102, 241, 0.12); color: var(--forge-accent-lite);
+  border: 1px solid var(--forge-accent); border-radius: 5px;
+  padding: 4px 10px; font-size: 11px; cursor: pointer;
+  transition: background-color 150ms;
+}
+.sf-figure-chip:hover { background: rgba(99, 102, 241, 0.25); }
+
+.sf-lightbox {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(15, 17, 23, 0.85);
+  display: flex; align-items: center; justify-content: center;
+  animation: sf-fade-in 150ms var(--ease-out-quart) both;
+}
+@keyframes sf-fade-in { from { opacity: 0; } to { opacity: 1; } }
+.sf-lightbox-body {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px;
+  max-width: 92vw; max-height: 92vh;
+}
+.sf-lightbox-img {
+  max-width: 92vw; max-height: 84vh;
+  border-radius: 8px; border: 1px solid var(--forge-border);
+  background: var(--forge-surface);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+}
+.sf-lightbox-frame {
+  width: 88vw; height: 80vh; border: 1px solid var(--forge-border);
+  border-radius: 8px; background: #fff;
+}
+.sf-lightbox-bar { display: flex; align-items: center; gap: 10px; }
+.sf-lightbox-nav { background: var(--forge-surface); border: 1px solid var(--forge-border); }
+.sf-lightbox-nav:hover:not(:disabled) { background: var(--forge-border); }
+.sf-lightbox-counter { color: var(--forge-muted); font-size: 12px; }
+.sf-lightbox-close { margin-left: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
