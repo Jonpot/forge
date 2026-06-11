@@ -94,11 +94,28 @@ def toposort(doc: PipelineDoc) -> tuple[list[str], set[str]]:
     return order, {nid for nid, deg in indegree.items() if deg > 0}
 
 
+#: Staleness tiers (DESIGN.md §7). The closure component per tier:
+#:   T0 — function body only (cheapest, misses helper edits entirely)
+#:   T1 — + the defining module (catches same-file helpers)
+#:   T2 — + the repo import closure (default; safe over-invalidation)
+TIERS = ("T0", "T1", "T2")
+
+
+def _closure_component(tier: str, index: WorkspaceIndex, module: str) -> str:
+    if tier == "T0":
+        return ""
+    if tier == "T1":
+        info = index.modules.get(module)
+        return (info.ast_hash or info.file_hash) if info else ""
+    return index.closure_hash(module)
+
+
 def compute_states(
     doc: PipelineDoc,
     index: WorkspaceIndex,
     env_fp: str,
     checkpoint_exists: Callable[[str], bool],
+    tier: str = "T2",
 ) -> dict[str, NodeState]:
     """Hash every node and decide staleness. Never raises on a sick document —
     problems are reported per-node so the canvas can render them in place."""
@@ -163,7 +180,7 @@ def compute_states(
             canonical_json(
                 {
                     "fn": info.source_hash,
-                    "closure": index.closure_hash(info.module),
+                    "closure": _closure_component(tier, index, info.module),
                     "env": env_fp,
                     "params": literals,
                     "inputs": inputs,

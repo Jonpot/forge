@@ -71,10 +71,21 @@ def test_tuple_return_annotation_infers_outputs(workspace):
         "tuples.py",
         "from starforge import block\n\n"
         "@block\n"
-        "def pair(x: int) -> tuple[int, str]:\n    return x, str(x)\n",
+        "def pair(x: int) -> tuple[int, str]:\n    return x, str(x)\n\n"
+        "@block(outputs=('left', 'right'))\n"
+        "def named_pair(x: int) -> tuple[dict, float]:\n    return {'x': x}, float(x)\n",
     )
     index, _ = scan_workspace(workspace.root)
-    assert index.blocks["tuples:pair"].outputs == ["output_0", "output_1"]
+    pair = index.blocks["tuples:pair"]
+    assert pair.outputs == ["output_0", "output_1"]
+    assert pair.output_annotations == ["int", "str"]
+    named = index.blocks["tuples:named_pair"]
+    assert named.outputs == ["left", "right"]
+    assert named.output_annotations == ["dict", "float"]
+
+    # Single-output annotation rides along too.
+    make = index.blocks["pipeline_lib.sources:make_numbers"]
+    assert make.output_annotations == ["dict"]
 
 
 def test_incremental_cache_and_source_hash_stability(workspace):

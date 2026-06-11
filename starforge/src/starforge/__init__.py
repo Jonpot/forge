@@ -10,7 +10,7 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
-__all__ = ["block", "BLOCK_ATTR"]
+__all__ = ["block", "progress", "BLOCK_ATTR"]
 
 #: Attribute set on decorated functions. The AST indexer matches the decorator
 #: syntactically and never imports user code; this runtime tag exists so user
@@ -58,3 +58,29 @@ def block(fn=None, *, label=None, category=None, outputs=None):
     if fn is not None:
         return apply(fn)
     return apply
+
+
+#: Installed by the *Forge run worker around each block call; None everywhere
+#: else, which keeps progress() a guaranteed no-op in pytest/CI/production.
+_progress_hook = None
+
+
+def progress(current=None, total=None, label=None):
+    """Report block progress to the *Forge canvas.
+
+    Call freely inside a block::
+
+        for i, chunk in enumerate(chunks):
+            progress(i + 1, len(chunks), "fitting folds")
+            ...
+
+    Outside a *Forge run this does nothing and costs one attribute read —
+    safe to leave in production code. Any combination of arguments works:
+    (current, total) renders a determinate bar, label alone updates the text.
+    """
+    hook = _progress_hook
+    if hook is not None:
+        try:
+            hook(current, total, label)
+        except Exception:
+            pass  # progress must never break user code

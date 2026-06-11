@@ -20,11 +20,39 @@ import time
 import traceback
 from typing import Any, Callable
 
+import starforge
 from starforge.core import figures as figmod
 from starforge.core.checkpoints import CheckpointStore
 from starforge.core.provenance import BUILTIN_PREFIX, toposort
 from starforge.core.serializers import EphemeralValueError
 from starforge.core.spec import PipelineDoc, Node
+
+#: Minimum seconds between forwarded progress events per node — blocks may
+#: call progress() in tight loops; the canvas needs ~12fps at most.
+PROGRESS_THROTTLE_S = 0.08
+
+
+def _progress_hook(node_id: str, emit: Emit) -> Callable[[Any, Any, Any], None]:
+    last = {"at": 0.0}
+
+    def hook(current: Any, total: Any, label: Any) -> None:
+        now = time.monotonic()
+        final = total is not None and current == total
+        if not final and now - last["at"] < PROGRESS_THROTTLE_S:
+            return
+        last["at"] = now
+        event: dict[str, Any] = {"event": "node_progress", "node": node_id}
+        if current is not None:
+            event["current"] = current
+        if total is not None:
+            event["total"] = total
+        if label is not None:
+            event["label"] = str(label)
+        if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total:
+            event["percent"] = max(0.0, min(1.0, current / total))
+        emit(event)
+
+    return hook
 
 Emit = Callable[[dict[str, Any]], None]
 
@@ -139,6 +167,7 @@ def run_pipeline(
             continue
 
         if nid in reuse:
+            store.touch(node_hash)  # LRU signal for checkpoint GC
             emit({"event": "node_skipped", "node": nid, "history_hash": node_hash})
             continue
 
@@ -183,9 +212,13 @@ def run_pipeline(
 
                 # capture() wraps the import too: module-level figure code
                 # and figures created/shown inside the call are both swept.
-                with figmod.capture() as captured:
-                    fn = _import_function(info["module"], info["qualname"])
-                    result = fn(**kwargs)
+                starforge._progress_hook = _progress_hook(nid, emit)
+                try:
+                    with figmod.capture() as captured:
+                        fn = _import_function(info["module"], info["qualname"])
+                        result = fn(**kwargs)
+                finally:
+                    starforge._progress_hook = None
                 outputs = _map_outputs(result, list(info["outputs"]), info.get("label", node.block))
                 side_figures = [
                     fig for fig in captured.all_objects()

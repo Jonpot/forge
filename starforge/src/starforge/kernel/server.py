@@ -110,6 +110,29 @@ class Kernel:
             raise RuntimeError("kernel not initialized — call 'initialize' first")
         return self.workspace
 
+    def _tier(self) -> str:
+        tier = str(self.settings.get("tier", "T2"))
+        return tier if tier in ("T0", "T1", "T2") else "T2"
+
+    def _max_checkpoint_bytes(self) -> int:
+        try:
+            mb = float(self.settings.get("max_checkpoint_mb", 2048))
+        except (TypeError, ValueError):
+            mb = 2048
+        return int(max(64.0, mb) * 1024 * 1024)
+
+    def _run_gc(self) -> None:
+        try:
+            stats = self._store().gc(self._max_checkpoint_bytes())
+            if stats["deleted"]:
+                freed = stats["freed_bytes"] / (1024 * 1024)
+                self.notify(
+                    "log",
+                    {"text": f"checkpoint GC: evicted {stats['deleted']} checkpoints ({freed:.1f} MB)"},
+                )
+        except Exception:
+            pass  # hygiene must never break runs
+
     def _cache_path(self) -> Path:
         return self._require_workspace() / ".forge" / "cache" / "index.json"
 
@@ -141,6 +164,7 @@ class Kernel:
         self.settings = dict(params.get("settings") or {})
         store = self._store()
         store.ensure_layout()
+        store.clean_run_specs()
         cache_path = self._cache_path()
         if cache_path.is_file():
             try:
@@ -169,14 +193,18 @@ class Kernel:
         workspace = self._require_workspace()
         doc = PipelineDoc.from_dict(params["doc"])
         index = self._ensure_index()
-        states = compute_states(doc, index, env_fingerprint(workspace), self._store().exists)
+        states = compute_states(
+            doc, index, env_fingerprint(workspace), self._store().exists, tier=self._tier()
+        )
         return {"nodes": {nid: state.to_dict() for nid, state in states.items()}}
 
     def rpc_run_start(self, params: dict[str, Any]) -> dict[str, Any]:
         workspace = self._require_workspace()
         doc = PipelineDoc.from_dict(params["doc"])
         index = self._ensure_index()
-        states = compute_states(doc, index, env_fingerprint(workspace), self._store().exists)
+        states = compute_states(
+            doc, index, env_fingerprint(workspace), self._store().exists, tier=self._tier()
+        )
         blocks = index.blocks
         referenced = {
             node.block: {
@@ -245,6 +273,14 @@ class Kernel:
                 {"run_id": run_id, "event": "run_finished", "status": status, "exit_code": code},
             )
         self._runs.pop(run_id, None)
+        # Post-run hygiene: the one-shot spec file and, if over budget, LRU
+        # checkpoint eviction.
+        try:
+            spec_path = self._require_workspace() / ".forge" / "cache" / "runs" / f"{run_id}.json"
+            spec_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        self._run_gc()
 
     def _pump_logs(self, run_id: str, proc: subprocess.Popen) -> None:
         assert proc.stderr is not None
@@ -271,6 +307,17 @@ class Kernel:
         if not store.exists(history_hash):
             raise FileNotFoundError(f"no checkpoint for hash {history_hash[:16]}")
         return store.read_provenance(history_hash)
+
+    def rpc_maintenance_gc(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Manual checkpoint eviction; `max_mb` overrides the configured cap
+        (pass 0 to clear everything)."""
+        store = self._store()
+        store.clean_run_specs(max_age_seconds=0)
+        if "max_mb" in params:
+            max_bytes = int(max(0.0, float(params["max_mb"])) * 1024 * 1024)
+        else:
+            max_bytes = self._max_checkpoint_bytes()
+        return store.gc(max_bytes)
 
     def rpc_results_figures(self, params: dict[str, Any]) -> dict[str, Any]:
         """Batch lookup of display artifacts for node thumbnails: for each

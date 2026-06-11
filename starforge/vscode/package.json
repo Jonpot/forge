@@ -3,11 +3,12 @@
   "displayName": "*Forge",
   "description": "Pipeline canvas, checkpointing, and stale/hydrate execution for the repo you already have open.",
   "version": "0.1.0",
-  "publisher": "starforge",
+  "publisher": "jonpot",
   "license": "Apache-2.0",
   "repository": { "type": "git", "url": "https://github.com/Jonpot/forge" },
   "engines": { "vscode": "^1.90.0" },
   "categories": ["Data Science", "Visualization", "Other"],
+  "icon": "icon.png",
   "main": "./dist/extension.js",
   "activationEvents": [],
   "contributes": {
@@ -22,7 +23,8 @@
     "commands": [
       { "command": "starforge.newPipeline", "title": "*Forge: New Pipeline" },
       { "command": "starforge.rescan", "title": "*Forge: Rescan Workspace Blocks" },
-      { "command": "starforge.restartKernel", "title": "*Forge: Restart Kernel" }
+      { "command": "starforge.restartKernel", "title": "*Forge: Restart Kernel" },
+      { "command": "starforge.cleanCheckpoints", "title": "*Forge: Clean Checkpoint Cache" }
     ],
     "configuration": {
       "title": "*Forge",
@@ -36,6 +38,23 @@
           "type": "boolean",
           "default": false,
           "description": "Allow the pickle serializer tier for checkpoint outputs that have no native serializer. When off, such outputs are ephemeral: they flow within a run but downstream nodes recompute in future runs."
+        },
+        "starforge.stalenessTier": {
+          "type": "string",
+          "enum": ["T0", "T1", "T2"],
+          "default": "T2",
+          "enumDescriptions": [
+            "Function body only — cheapest; edits to helpers are NOT detected (risk of stale-but-green results).",
+            "Function + its module — catches same-file helper edits; cross-module helpers are NOT detected.",
+            "Function + repo import closure (recommended) — any edit to an imported module marks dependents stale. Over-invalidates safely: extra reruns, never wrong data."
+          ],
+          "description": "How much surrounding code participates in staleness detection."
+        },
+        "starforge.maxCheckpointSizeMB": {
+          "type": "number",
+          "default": 2048,
+          "minimum": 64,
+          "description": "Checkpoint store size budget per workspace. After each run, least-recently-used checkpoints are evicted until under this cap (evicted nodes simply read as stale and recompute)."
         }
       }
     }
@@ -44,19 +63,19 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
+    "package": "vsce package --no-dependencies",
     "vscode:prepublish": "node esbuild.mjs --production"
-  },
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "reactflow": "^11.11.4"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^2.27.0",
     "esbuild": "^0.21.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "reactflow": "^11.11.4",
     "typescript": "^5.5.3"
   }
 }

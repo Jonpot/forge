@@ -56,6 +56,10 @@ class PipelineDoc:
     name: str = "Untitled"
     nodes: list[Node] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)
+    #: Canvas annotation boxes: [{id, title, description, position, width,
+    #: height, color}]. Pure layout metadata — round-trips untouched, never
+    #: participates in hashing or execution.
+    comments: list[dict[str, Any]] = field(default_factory=list)
 
     def node(self, node_id: str) -> Node:
         for node in self.nodes:
@@ -72,6 +76,7 @@ class PipelineDoc:
             "name": self.name,
             "nodes": [n.to_dict() for n in self.nodes],
             "edges": [e.to_dict() for e in self.edges],
+            "comments": self.comments,
         }
 
     def to_json(self) -> str:
@@ -102,7 +107,12 @@ class PipelineDoc:
             )
             for e in d.get("edges", [])
         ]
-        return cls(name=d.get("name", "Untitled"), nodes=nodes, edges=edges)
+        return cls(
+            name=d.get("name", "Untitled"),
+            nodes=nodes,
+            edges=edges,
+            comments=list(d.get("comments", [])),
+        )
 
     @classmethod
     def from_json(cls, text: str) -> "PipelineDoc":

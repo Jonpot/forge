@@ -14,7 +14,10 @@ land in the user's repo history while ``pipelines/`` remains committable.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import shutil
+import time
 from typing import Any
 
 from starforge.core import figures as figmod
@@ -121,3 +124,55 @@ class CheckpointStore:
         except (KeyError, FileNotFoundError, json.JSONDecodeError):
             return True
         return entry.get("serializer") == serializers.EPHEMERAL
+
+    def touch(self, history_hash: str) -> None:
+        """Bump the checkpoint dir's mtime so LRU GC sees reuse as recency."""
+        try:
+            os.utime(self.dir_for(history_hash))
+        except OSError:
+            pass
+
+    def gc(self, max_bytes: int) -> dict[str, int]:
+        """Least-recently-used eviction down to ``max_bytes`` total.
+
+        Deleting a live checkpoint is always safe — the node just reads as
+        stale and recomputes — so a plain LRU needs no liveness analysis.
+        Returns {"freed_bytes", "deleted", "remaining_bytes"}.
+        """
+        entries: list[tuple[float, int, Path]] = []
+        total = 0
+        if self.base.is_dir():
+            for directory in self.base.iterdir():
+                if not directory.is_dir():
+                    continue
+                size = sum(f.stat().st_size for f in directory.rglob("*") if f.is_file())
+                try:
+                    mtime = directory.stat().st_mtime
+                except OSError:
+                    continue
+                entries.append((mtime, size, directory))
+                total += size
+
+        freed = 0
+        deleted = 0
+        entries.sort()  # oldest first
+        for _mtime, size, directory in entries:
+            if total - freed <= max_bytes:
+                break
+            shutil.rmtree(directory, ignore_errors=True)
+            freed += size
+            deleted += 1
+        return {"freed_bytes": freed, "deleted": deleted, "remaining_bytes": total - freed}
+
+    def clean_run_specs(self, max_age_seconds: float = 86400.0) -> None:
+        """Run-spec files are one-shot worker inputs; sweep the stale ones."""
+        runs_dir = self.forge_dir / "cache" / "runs"
+        if not runs_dir.is_dir():
+            return
+        cutoff = time.time() - max_age_seconds
+        for spec in runs_dir.glob("*.json"):
+            try:
+                if spec.stat().st_mtime < cutoff:
+                    spec.unlink()
+            except OSError:
+                continue

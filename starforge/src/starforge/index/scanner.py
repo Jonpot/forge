@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 #: Bump when the per-file cache entry shape changes; old entries re-parse.
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 #: Directories never worth scanning. Dot-directories are skipped wholesale
 #: (.git, .forge, .venv, ...), these cover the common non-dotted offenders.
@@ -81,6 +81,10 @@ class BlockInfo:
     returns: str | None
     doc: str | None
     source_hash: str
+    #: Per-output annotation strings, aligned with ``outputs`` (None when
+    #: unknown). Single output → [returns]; tuple returns → element types.
+    #: Feeds the canvas's edge-compatibility warnings.
+    output_annotations: list[str | None] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +100,7 @@ class BlockInfo:
             "returns": self.returns,
             "doc": self.doc,
             "source_hash": self.source_hash,
+            "output_annotations": self.output_annotations,
         }
 
     @classmethod
@@ -325,12 +330,8 @@ def _extract_params(fn: ast.FunctionDef) -> list[ParamInfo]:
     return params
 
 
-def _infer_outputs(fn: ast.FunctionDef, decorator_outputs: Any) -> list[str]:
-    if decorator_outputs:
-        names = [str(n) for n in decorator_outputs]
-        if names:
-            return names
-    returns = fn.returns
+def _tuple_elements(returns: ast.expr | None) -> list[ast.expr] | None:
+    """The element annotations of a fixed-arity ``tuple[...]`` return."""
     if (
         isinstance(returns, ast.Subscript)
         and isinstance(returns.value, ast.Name)
@@ -338,10 +339,26 @@ def _infer_outputs(fn: ast.FunctionDef, decorator_outputs: Any) -> list[str]:
         and isinstance(returns.slice, ast.Tuple)
     ):
         elts = returns.slice.elts
-        # tuple[int, ...] is variadic — fall back to a single output.
+        # tuple[int, ...] is variadic — treat as a single opaque output.
         if not any(isinstance(e, ast.Constant) and e.value is Ellipsis for e in elts):
-            return [f"output_{i}" for i in range(len(elts))]
-    return ["output"]
+            return list(elts)
+    return None
+
+
+def _infer_outputs(fn: ast.FunctionDef, decorator_outputs: Any) -> tuple[list[str], list[str | None]]:
+    """Returns (output_names, per_output_annotations)."""
+    elements = _tuple_elements(fn.returns)
+    element_annotations = [ast.unparse(e) for e in elements] if elements else None
+
+    if decorator_outputs:
+        names = [str(n) for n in decorator_outputs]
+        if names:
+            if element_annotations and len(element_annotations) == len(names):
+                return names, list(element_annotations)
+            return names, [None] * len(names)
+    if element_annotations:
+        return [f"output_{i}" for i in range(len(element_annotations))], list(element_annotations)
+    return ["output"], [ast.unparse(fn.returns) if fn.returns else None]
 
 
 def _default_label(name: str) -> str:
@@ -384,6 +401,7 @@ def _parse_module(
                 "(methods and nested functions are not supported yet)"
             )
             continue
+        output_names, output_annotations = _infer_outputs(node, matched_kwargs.get("outputs"))
         blocks.append(
             BlockInfo(
                 block_id=f"{module}:{node.name}",
@@ -394,10 +412,11 @@ def _parse_module(
                 label=matched_kwargs.get("label") or _default_label(node.name),
                 category=matched_kwargs.get("category") or module,
                 params=_extract_params(node),
-                outputs=_infer_outputs(node, matched_kwargs.get("outputs")),
+                outputs=output_names,
                 returns=ast.unparse(node.returns) if node.returns else None,
                 doc=ast.get_docstring(node),
                 source_hash=_sha(ast.dump(node)),
+                output_annotations=output_annotations,
             )
         )
     return blocks, _collect_imports(tree, module), errors, _sha(ast.dump(tree))

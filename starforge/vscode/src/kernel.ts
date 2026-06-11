@@ -106,10 +106,13 @@ export class KernelClient implements vscode.Disposable {
       );
     });
 
+    const config = vscode.workspace.getConfiguration("starforge");
     const init = await this.request("initialize", {
       workspace: this.workspace.uri.fsPath,
       settings: {
-        pickle_enabled: vscode.workspace.getConfiguration("starforge").get<boolean>("pickleEnabled") ?? false,
+        pickle_enabled: config.get<boolean>("pickleEnabled") ?? false,
+        tier: config.get<string>("stalenessTier") ?? "T2",
+        max_checkpoint_mb: config.get<number>("maxCheckpointSizeMB") ?? 2048,
       },
     });
     this.output.appendLine(`[kernel] ready: v${init.kernel_version} (python ${init.python})`);
@@ -192,6 +195,10 @@ export class KernelClient implements vscode.Disposable {
     historyHashes: string[],
   ): Promise<{ checkpoints: Record<string, { dir: string | null; artifacts: { file: string; kind: string }[] }> }> {
     return this.request("results/figures", { history_hashes: historyHashes });
+  }
+
+  async gcCheckpoints(maxMb?: number): Promise<{ freed_bytes: number; deleted: number; remaining_bytes: number }> {
+    return this.request("maintenance/gc", maxMb === undefined ? {} : { max_mb: maxMb });
   }
 
   shutdown(): void {

@@ -10,6 +10,7 @@ import ReactFlow, {
   MiniMap,
   Node,
   NodeProps,
+  NodeResizer,
   Position,
   ReactFlowInstance,
   ReactFlowProvider,
@@ -41,6 +42,7 @@ interface BlockInfo {
   category: string;
   params: ParamInfo[];
   outputs: string[];
+  output_annotations?: (string | null)[];
   doc: string | null;
 }
 interface DocNode {
@@ -57,11 +59,21 @@ interface DocEdge {
   target: string;
   target_param: string;
 }
+interface DocComment {
+  id: string;
+  title: string;
+  description: string;
+  position: { x: number; y: number };
+  width: number;
+  height: number;
+  color: string;
+}
 interface ForgeDoc {
   schema: string;
   name: string;
   nodes: DocNode[];
   edges: DocEdge[];
+  comments?: DocComment[];
 }
 interface NodeState {
   history_hash: string | null;
@@ -74,8 +86,67 @@ type RunPhase = "running" | "done" | "failed" | "blocked" | "cancelled";
 interface FigureRef {
   uri: string;
   kind: string; // "image" | "html"
+  path?: string; // workspace-relative, for "open in browser"
 }
 type LightboxState = { items: FigureRef[]; index: number } | null;
+
+interface ProgressInfo {
+  current?: number;
+  total?: number;
+  label?: string;
+  percent?: number;
+}
+
+/** Desktop comment palette + theme (frontend/src/utils/commentColors.ts). */
+const COMMENT_COLORS = [
+  "#64748b", "#6366f1", "#3b82f6", "#06b6d4", "#14b8a6", "#22c55e", "#f59e0b", "#f97316", "#f43f5e",
+];
+
+function rgba(hex: string, alpha: number): string {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!match) return hex;
+  const value = parseInt(match[1], 16);
+  return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
+}
+
+function commentTheme(color: string, selected: boolean) {
+  return {
+    color,
+    background: rgba(color, selected ? 0.14 : 0.09),
+    border: rgba(color, selected ? 0.72 : 0.44),
+    separator: rgba(color, selected ? 0.42 : 0.28),
+    buttonFill: rgba(color, selected ? 0.18 : 0.12),
+    buttonRing: rgba(color, selected ? 0.52 : 0.36),
+    shadow: selected
+      ? `0 0 0 1px ${rgba(color, 0.25)}, 0 4px 16px rgba(0, 0, 0, 0.4)`
+      : `0 0 0 1px ${rgba(color, 0.15)}, 0 4px 16px rgba(0, 0, 0, 0.24)`,
+    resizerLine: rgba(color, 0.82),
+  };
+}
+
+/** Defensive shape normalization — a malformed doc must degrade to an empty
+ * canvas, never crash rendering. */
+function normalizeDoc(d: any): ForgeDoc {
+  return {
+    schema: d?.schema ?? "starforge/1",
+    name: typeof d?.name === "string" ? d.name : "",
+    nodes: Array.isArray(d?.nodes) ? d.nodes : [],
+    edges: Array.isArray(d?.edges) ? d.edges : [],
+    comments: Array.isArray(d?.comments) ? d.comments : [],
+  };
+}
+
+/** Compact display form of an annotation for handle-adjacent labels:
+ * "pd.DataFrame | None" → "DataFrame | None". */
+function shortAnnotation(annotation: string | null | undefined): string | null {
+  if (!annotation) return null;
+  const text = annotation
+    .replace(/['"]/g, "")
+    .split("|")
+    .map((part) => part.trim().split("[")[0].split(".").pop() ?? part)
+    .join(" | ");
+  return text.length > 22 ? text.slice(0, 21) + "…" : text;
+}
 
 // ------------------------------------------------------------- canvas node
 
@@ -86,11 +157,14 @@ interface CanvasNodeData {
   outputs: string[];
   connectedParams: string[];
   literals: Record<string, any>;
+  outputAnnotations: (string | null)[];
   status: string; // stale | fresh | running | failed | blocked | problem | unknown
   problems: string[];
   errorSummary: string | null;
   figures: FigureRef[];
   onOpenFigures: (figures: FigureRef[], index: number) => void;
+  progress: ProgressInfo | null;
+  startedAt: number | null;
 }
 
 /** Mirrors the desktop BlockNode anatomy: status-tinted header with a status
@@ -158,8 +232,19 @@ function FigureCarousel({
   );
 }
 
+/** Live elapsed readout, ticking locally so the canvas doesn't re-render. */
+function Elapsed({ since }: { since: number }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => tick((t) => t + 1), 500);
+    return () => clearInterval(interval);
+  }, []);
+  return <>{((Date.now() - since) / 1000).toFixed(1)}s</>;
+}
+
 function CanvasNode({ data, selected }: NodeProps<CanvasNodeData>) {
   const cat = resolveCategoryStyle(data.category);
+  const running = data.status === "running";
   return (
     <div className={`sf-node sf-${data.status}${selected ? " sf-node-selected" : ""}`}>
       <div className={`sf-node-head sf-head-${data.status}`}>
@@ -169,6 +254,7 @@ function CanvasNode({ data, selected }: NodeProps<CanvasNodeData>) {
       <div className="sf-rows">
         {data.params.map((p) => {
           const wired = data.connectedParams.includes(p.name);
+          const typeLabel = shortAnnotation(p.annotation);
           return (
             <div key={p.name} className="sf-row sf-row-param">
               <Handle
@@ -177,6 +263,11 @@ function CanvasNode({ data, selected }: NodeProps<CanvasNodeData>) {
                 id={p.name}
                 className={wired ? "sf-handle sf-wired" : "sf-handle"}
               />
+              {typeLabel && (
+                <span className="sf-handle-type sf-handle-type-left" title={p.annotation ?? undefined}>
+                  {typeLabel}
+                </span>
+              )}
               <span className="sf-param-name">{p.name}</span>
               {!wired && (
                 <span className="sf-param-value">
@@ -188,20 +279,64 @@ function CanvasNode({ data, selected }: NodeProps<CanvasNodeData>) {
             </div>
           );
         })}
-        {data.outputs.map((name) => (
-          <div key={name} className="sf-row sf-row-output">
-            <span className="sf-output-name">{name}</span>
-            <Handle type="source" position={Position.Right} id={name} className="sf-handle" />
-          </div>
-        ))}
+        {data.outputs.map((name, i) => {
+          const typeLabel = shortAnnotation(data.outputAnnotations[i]);
+          return (
+            <div key={name} className="sf-row sf-row-output">
+              <span className="sf-output-name">{name}</span>
+              <Handle type="source" position={Position.Right} id={name} className="sf-handle" />
+              {typeLabel && (
+                <span
+                  className="sf-handle-type sf-handle-type-right"
+                  title={data.outputAnnotations[i] ?? undefined}
+                >
+                  {typeLabel}
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>
       {data.figures.length > 0 && <FigureCarousel figures={data.figures} onOpen={data.onOpenFigures} />}
+      {running && (
+        <div className="sf-progress">
+          <div className="sf-progress-meta">
+            <span className="sf-progress-label">{data.progress?.label ?? "Working"}</span>
+            <span className="sf-progress-count">
+              {data.progress?.total !== undefined
+                ? `${data.progress.current ?? 0}/${data.progress.total}`
+                : data.progress?.current !== undefined
+                  ? `${data.progress.current}`
+                  : ""}
+            </span>
+          </div>
+          <div className="sf-progress-track">
+            <div
+              className={`sf-progress-fill${data.progress?.percent === undefined ? " sf-indeterminate" : ""}`}
+              style={{
+                width:
+                  data.progress?.percent === undefined
+                    ? "35%"
+                    : `${Math.max(2, Math.round(data.progress.percent * 100))}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
       <div className="sf-node-foot">
         <span className="sf-badge" style={{ background: cat.badgeBg, color: cat.badgeText }}>
           <span aria-hidden="true">{cat.icon}</span>
           {data.category}
         </span>
-        <span className="sf-status-label">{STATUS_LABEL[data.status] ?? data.status}</span>
+        <span className="sf-status-label">
+          {running && data.startedAt ? (
+            <>
+              Running · <Elapsed since={data.startedAt} />
+            </>
+          ) : (
+            STATUS_LABEL[data.status] ?? data.status
+          )}
+        </span>
       </div>
       {(data.problems.length > 0 || data.errorSummary) && (
         <div className="sf-problem-strip" title={data.errorSummary ?? data.problems.join("\n")}>
@@ -212,7 +347,89 @@ function CanvasNode({ data, selected }: NodeProps<CanvasNodeData>) {
   );
 }
 
-const nodeTypes = { forgeBlock: CanvasNode };
+interface CommentNodeData {
+  title: string;
+  description: string;
+  color: string;
+  onChange: (patch: Partial<DocComment>) => void;
+}
+
+/** Canvas annotation box, mirroring the desktop CommentNode anatomy: themed
+ * translucent wash + colored border, title row with an 18px color-swatch
+ * button (opens the swatch panel), separator, description area, themed
+ * resizer. (Desktop's custom HSV editor is a later nicety.) */
+function CommentNode({ data, selected }: NodeProps<CommentNodeData>) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const theme = commentTheme(data.color, selected || menuOpen);
+  useEffect(() => {
+    if (!selected) setMenuOpen(false);
+  }, [selected]);
+  return (
+    <div
+      className="sf-comment"
+      style={{ background: theme.background, borderColor: theme.border, boxShadow: theme.shadow }}
+    >
+      <NodeResizer
+        isVisible={selected}
+        minWidth={160}
+        minHeight={96}
+        color={theme.resizerLine}
+        onResizeEnd={(_e, params) =>
+          data.onChange({
+            position: { x: Math.round(params.x), y: Math.round(params.y) },
+            width: Math.round(params.width),
+            height: Math.round(params.height),
+          })
+        }
+      />
+      <div className="sf-comment-head">
+        <input
+          className="sf-comment-title nodrag nopan"
+          defaultValue={data.title}
+          placeholder="Comment Title"
+          style={{ color: theme.color }}
+          onBlur={(e) => e.target.value !== data.title && data.onChange({ title: e.target.value })}
+        />
+        <button
+          className="sf-comment-swatch nodrag nopan"
+          title="Comment color"
+          style={{ background: theme.buttonFill, borderColor: theme.buttonRing }}
+          onClick={(e) => {
+            e.stopPropagation();
+            setMenuOpen((open) => !open);
+          }}
+        />
+      </div>
+      <div className="sf-comment-separator" style={{ background: theme.separator }} />
+      <textarea
+        className="sf-comment-body nodrag nopan"
+        defaultValue={data.description}
+        placeholder="Add a description…"
+        onBlur={(e) => e.target.value !== data.description && data.onChange({ description: e.target.value })}
+      />
+      {menuOpen && (
+        <div className="sf-comment-menu nodrag nopan" onClick={(e) => e.stopPropagation()}>
+          <span className="sf-comment-menu-label">Color</span>
+          <div className="sf-comment-swatch-grid">
+            {COMMENT_COLORS.map((color) => (
+              <button
+                key={color}
+                className={`sf-comment-swatch-option${color === data.color ? " sf-swatch-active" : ""}`}
+                style={{ background: color }}
+                onClick={() => {
+                  data.onChange({ color });
+                  setMenuOpen(false);
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const nodeTypes = { forgeBlock: CanvasNode, forgeComment: CommentNode };
 
 // ---------------------------------------------------------------- previews
 
@@ -222,13 +439,13 @@ function PreviewView({
   onOpenFigure,
 }: {
   preview: any;
-  artifact?: { uri?: string; kind?: string };
+  artifact?: { uri?: string; kind?: string; path?: string };
   onOpenFigure?: (figure: FigureRef) => void;
 }) {
   if (!preview) return null;
   if (preview.kind === "figure") {
     if (!artifact?.uri) return <div className="sf-hint">figure (artifact unavailable)</div>;
-    const figure: FigureRef = { uri: artifact.uri, kind: artifact.kind ?? "image" };
+    const figure: FigureRef = { uri: artifact.uri, kind: artifact.kind ?? "image", path: artifact.path };
     return figure.kind === "image" ? (
       <img
         className="sf-thumb sf-thumb-inspector"
@@ -307,6 +524,10 @@ function App() {
   const [search, setSearch] = useState("");
   const [nodeFigures, setNodeFigures] = useState<Record<string, FigureRef[]>>({});
   const [lightbox, setLightbox] = useState<LightboxState>(null);
+  const [runProgress, setRunProgress] = useState<Record<string, ProgressInfo>>({});
+  const [startedAt, setStartedAt] = useState<Record<string, number>>({});
+  const [hoverCard, setHoverCard] = useState<{ block: BlockInfo; top: number } | null>(null);
+  const [edgeTip, setEdgeTip] = useState<{ text: string; x: number; y: number } | null>(null);
   const lightboxRef = useRef<LightboxState>(null);
   lightboxRef.current = lightbox;
 
@@ -316,7 +537,14 @@ function App() {
   const flowRef = useRef<ReactFlowInstance | null>(null);
   const docRef = useRef(doc);
   docRef.current = doc;
-  const draggingRef = useRef(false);
+  // Last payloads applied, serialized. Self-echoes after commits and
+  // identical re-pushes (focus rescans, post-run refreshes) are dropped here
+  // before they can touch state — otherwise every interaction triggers a
+  // multi-pass full-canvas re-render that reads as a flash.
+  const lastSeenRef = useRef<{ doc?: string; palette?: string; hashes?: string; figures?: string }>({});
+  // Timestamp of the last drag activity (0 = not dragging). Time-based so a
+  // missed dragStop can never permanently freeze doc→canvas syncing.
+  const draggingRef = useRef(0);
 
   const blocksById = useMemo(() => new Map(palette.map((b) => [b.block_id, b])), [palette]);
 
@@ -325,20 +553,43 @@ function App() {
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       const { type, payload } = event.data;
-      if (type === "doc") setDoc(payload);
-      else if (type === "palette") {
+      const seen = lastSeenRef.current;
+      if (type === "doc") {
+        const normalized = normalizeDoc(payload);
+        const serialized = JSON.stringify(normalized);
+        if (seen.doc === serialized) return;
+        seen.doc = serialized;
+        setDoc(normalized);
+      } else if (type === "palette") {
+        const serialized = JSON.stringify(payload);
+        if (seen.palette === serialized) return;
+        seen.palette = serialized;
         setPalette(payload.blocks);
         setPaletteErrors(payload.errors ?? {});
         setKernelError(null);
-      } else if (type === "hashes") setHashes(payload);
+      } else if (type === "hashes") {
+        const serialized = JSON.stringify(payload);
+        if (seen.hashes === serialized) return;
+        seen.hashes = serialized;
+        setHashes(payload);
+      }
       else if (type === "runStarted") {
         setRunId(payload);
         setRunPhase({});
         setFailures({});
+        setRunProgress({});
+        setStartedAt({});
       } else if (type === "runEvent") {
         const e = payload;
-        if (e.event === "node_started") setRunPhase((s) => ({ ...s, [e.node]: "running" }));
-        else if (e.event === "node_completed") setRunPhase((s) => ({ ...s, [e.node]: "done" }));
+        if (e.event === "node_started") {
+          setRunPhase((s) => ({ ...s, [e.node]: "running" }));
+          setStartedAt((s) => ({ ...s, [e.node]: Date.now() }));
+        } else if (e.event === "node_progress") {
+          setRunProgress((s) => ({
+            ...s,
+            [e.node]: { current: e.current, total: e.total, label: e.label, percent: e.percent },
+          }));
+        } else if (e.event === "node_completed") setRunPhase((s) => ({ ...s, [e.node]: "done" }));
         else if (e.event === "node_failed") {
           setRunPhase((s) => ({ ...s, [e.node]: "failed" }));
           setFailures((f) => ({ ...f, [e.node]: e.traceback ?? "failed" }));
@@ -355,21 +606,45 @@ function App() {
           });
         }
       } else if (type === "manifest") setManifest(payload);
-      else if (type === "nodeFigures") setNodeFigures(payload);
-      else if (type === "kernelError") setKernelError(payload);
+      else if (type === "nodeFigures") {
+        const serialized = JSON.stringify(payload);
+        if (seen.figures === serialized) return;
+        seen.figures = serialized;
+        setNodeFigures(payload);
+      } else if (type === "kernelError") setKernelError(payload);
     };
     window.addEventListener("message", onMessage);
     vscode.postMessage({ type: "ready" });
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
+  /** Images expand in the lightbox; interactive HTML opens a dedicated
+   * editor-tab webview (iframes can't render webview resources — see the
+   * extension's showFigurePanel). */
+  const openFigure = useCallback((figures: FigureRef[], index: number) => {
+    const figure = figures[index];
+    if (figure.kind === "html" && figure.path) {
+      vscode.postMessage({
+        type: "openFigurePanel",
+        payload: { path: figure.path, title: figure.path.split("/").pop() },
+      });
+    } else {
+      setLightbox({ items: figures, index });
+    }
+  }, []);
+
   const commit = useCallback((next: ForgeDoc) => {
+    // Normalize so our optimistic state serializes identically to its echo
+    // (the file round-trip adds defaults like comments: []) — that's what
+    // lets lastSeenRef recognize and drop the echo.
+    const normalized = normalizeDoc(next);
     // docRef must update SYNCHRONOUSLY: React Flow can invoke several
     // handlers in one event tick (e.g. node-delete + edge-delete), and the
     // second must build on the first's result, not on the pre-render doc.
-    docRef.current = next;
-    setDoc(next); // optimistic; the canonical doc echoes back via "doc"
-    vscode.postMessage({ type: "updateDoc", payload: next });
+    docRef.current = normalized;
+    lastSeenRef.current.doc = JSON.stringify(normalized);
+    setDoc(normalized); // optimistic; the identical echo is dropped on arrival
+    vscode.postMessage({ type: "updateDoc", payload: normalized });
   }, []);
 
   // ------------------------------------------------- doc → React Flow sync
@@ -390,7 +665,9 @@ function App() {
   );
 
   useEffect(() => {
-    if (draggingRef.current) return; // never fight an in-flight drag
+    // Never fight an in-flight drag — but a drag with no activity for 1.5s
+    // is considered abandoned (missed dragStop) and syncing resumes.
+    if (draggingRef.current && Date.now() - draggingRef.current < 1500) return;
     setNodes((current) => {
       const byId = new Map(current.map((n) => [n.id, n]));
       const next = doc.nodes.map((dn) => {
@@ -404,6 +681,7 @@ function App() {
           outputs: info?.outputs ?? ["output"],
           connectedParams: doc.edges.filter((e) => e.target === dn.id).map((e) => e.target_param),
           literals: dn.params,
+          outputAnnotations: info?.output_annotations ?? [],
           status: statusFor(dn.id),
           problems: hashes[dn.id]?.problems ?? (info ? [] : [`block '${dn.block}' not found`]),
           errorSummary: failure
@@ -412,7 +690,9 @@ function App() {
               ? "Execution cancelled"
               : null,
           figures: nodeFigures[dn.id] ?? [],
-          onOpenFigures: (figures, index) => setLightbox({ items: figures, index }),
+          onOpenFigures: openFigure,
+          progress: runProgress[dn.id] ?? null,
+          startedAt: startedAt[dn.id] ?? null,
         };
         return {
           id: dn.id,
@@ -423,28 +703,88 @@ function App() {
           selected: existing?.selected ?? pendingSelectRef.current.has(dn.id),
         };
       });
+      // Comments render behind blocks; edits round-trip through the doc.
+      const commentNodes = (doc.comments ?? []).map((comment) => ({
+        id: comment.id,
+        type: "forgeComment",
+        position: comment.position ?? { x: 0, y: 0 },
+        zIndex: -10,
+        style: { width: comment.width ?? 280, height: comment.height ?? 140 },
+        data: {
+          title: comment.title ?? "",
+          description: comment.description ?? "",
+          color: comment.color ?? COMMENT_COLORS[0],
+          onChange: (patch: Partial<DocComment>) => {
+            const current = docRef.current;
+            commit({
+              ...current,
+              comments: (current.comments ?? []).map((c) => (c.id === comment.id ? { ...c, ...patch } : c)),
+            });
+          },
+        },
+        selected: byId.get(comment.id)?.selected ?? false,
+      }));
+      const next2 = [...commentNodes, ...next];
       // Consume pending selections HERE, inside the updater — it runs later
       // than the effect body, so clearing outside would race and lose them.
-      if (pendingSelectRef.current.size > 0 && next.some((n) => n.selected)) {
+      if (pendingSelectRef.current.size > 0 && next2.some((n) => n.selected)) {
         pendingSelectRef.current = new Set();
       }
-      return next;
+      return next2 as Node<any>[];
     });
-  }, [doc, blocksById, hashes, runPhase, failures, nodeFigures, statusFor, setNodes]);
+  }, [doc, blocksById, hashes, runPhase, failures, nodeFigures, runProgress, startedAt, statusFor, setNodes, commit]);
+
+  /** Best-effort static compatibility between an output annotation and a
+   * param annotation. Conservative: warn only on a confident mismatch —
+   * editors warn, runtimes err (DESIGN.md §2.3). */
+  const edgeWarning = useCallback(
+    (edge: DocEdge): string | null => {
+      const sourceNode = doc.nodes.find((n) => n.id === edge.source);
+      const targetNode = doc.nodes.find((n) => n.id === edge.target);
+      const sourceInfo = sourceNode ? blocksById.get(sourceNode.block) : undefined;
+      const targetInfo = targetNode ? blocksById.get(targetNode.block) : undefined;
+      if (!sourceInfo || !targetInfo) return null;
+      const outIndex = sourceInfo.outputs.indexOf(edge.source_output);
+      const outAnn = sourceInfo.output_annotations?.[outIndex] ?? null;
+      const paramAnn = targetInfo.params.find((p) => p.name === edge.target_param)?.annotation ?? null;
+      if (!outAnn || !paramAnn) return null;
+      const tokens = (annotation: string): string[] =>
+        annotation
+          .replace(/['"]/g, "")
+          .replace(/Optional\[(.*)\]/g, "$1 | None")
+          .split("|")
+          .map((t) => t.trim())
+          .filter(Boolean);
+      const tail = (t: string) => t.split("[")[0].split(".").pop()?.trim().toLowerCase() ?? t.toLowerCase();
+      const paramTokens = tokens(paramAnn).map(tail);
+      const outTokens = tokens(outAnn).map(tail);
+      if (paramTokens.includes("any") || paramTokens.includes("object")) return null;
+      if (outTokens.includes("any") || outTokens.includes("object")) return null;
+      if (outTokens.some((t) => paramTokens.includes(t))) return null;
+      return `${edge.target_param} expects ${paramAnn}, receiving ${outAnn}`;
+    },
+    [doc.nodes, blocksById],
+  );
 
   useEffect(() => {
     setEdges((current) => {
       const selectedIds = new Set(current.filter((e) => e.selected).map((e) => e.id));
-      return doc.edges.map((e) => ({
-        id: e.id,
-        source: e.source,
-        sourceHandle: e.source_output,
-        target: e.target,
-        targetHandle: e.target_param,
-        selected: selectedIds.has(e.id),
-      }));
+      return doc.edges.map((e) => {
+        const warning = edgeWarning(e);
+        return {
+          id: e.id,
+          source: e.source,
+          sourceHandle: e.source_output,
+          target: e.target,
+          targetHandle: e.target_param,
+          selected: selectedIds.has(e.id),
+          className: warning ? "sf-edge-warn" : undefined,
+          label: warning ? "⚠" : undefined,
+          data: { warning },
+        };
+      });
     });
-  }, [doc.edges, setEdges]);
+  }, [doc.edges, edgeWarning, setEdges]);
 
   // ------------------------------------------------- interactions → doc
 
@@ -471,8 +811,14 @@ function App() {
   const onDrop = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault();
+      if (!flowRef.current) return;
+      if (event.dataTransfer.getData("application/starforge-comment")) {
+        const at = flowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+        addCommentAt({ x: at.x - 140, y: at.y - 20 });
+        return;
+      }
       const blockId = event.dataTransfer.getData("application/starforge-block");
-      if (!blockId || !flowRef.current) return;
+      if (!blockId) return;
       const position = flowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY });
       const current = docRef.current;
       const base = (blockId.split(":")[1] ?? "node").replace(/\W/g, "_");
@@ -490,18 +836,56 @@ function App() {
   );
 
   const onNodeDragStart = useCallback(() => {
-    draggingRef.current = true;
+    draggingRef.current = Date.now();
   }, []);
 
+  const onNodeDrag = useCallback(() => {
+    draggingRef.current = Date.now(); // keepalive while actively dragging
+  }, []);
+
+  /** Multi-select drags move many nodes; React Flow hands us all of them in
+   * the third argument — committing only the grabbed node would snap the
+   * rest back. */
   const onNodeDragStop = useCallback(
-    (_event: unknown, node: Node) => {
-      draggingRef.current = false;
+    (_event: unknown, node: Node, draggedNodes?: Node[]) => {
+      draggingRef.current = 0;
+      const moved = new Map(
+        (draggedNodes?.length ? draggedNodes : [node]).map((n) => [
+          n.id,
+          { x: Math.round(n.position.x), y: Math.round(n.position.y) },
+        ]),
+      );
       const current = docRef.current;
       commit({
         ...current,
-        nodes: current.nodes.map((n) =>
-          n.id === node.id ? { ...n, position: { x: Math.round(node.position.x), y: Math.round(node.position.y) } } : n,
+        nodes: current.nodes.map((n) => (moved.has(n.id) ? { ...n, position: moved.get(n.id)! } : n)),
+        comments: (current.comments ?? []).map((c) =>
+          moved.has(c.id) ? { ...c, position: moved.get(c.id)! } : c,
         ),
+      });
+    },
+    [commit],
+  );
+
+  const addCommentAt = useCallback(
+    (position: { x: number; y: number }) => {
+      const current = docRef.current;
+      let i = 1;
+      while ((current.comments ?? []).some((c) => c.id === `comment_${i}`)) i++;
+      commit({
+        ...current,
+        comments: [
+          ...(current.comments ?? []),
+          {
+            id: `comment_${i}`,
+            title: "Comment",
+            description: "",
+            position: { x: Math.round(position.x), y: Math.round(position.y) },
+            width: 280,
+            height: 150,
+            color: COMMENT_COLORS[(i - 1) % COMMENT_COLORS.length],
+          },
+        ],
       });
     },
     [commit],
@@ -513,9 +897,14 @@ function App() {
    * (deleteKeyCode={null}) so React Flow never half-applies a deletion. */
   const deleteSelection = useCallback(
     (prune: boolean) => {
-      const nodeIds = new Set(nodes.filter((n) => n.selected).map((n) => n.id));
+      const nodeIds = new Set(
+        nodes.filter((n) => n.selected && n.type === "forgeBlock").map((n) => n.id),
+      );
+      const commentIds = new Set(
+        nodes.filter((n) => n.selected && n.type === "forgeComment").map((n) => n.id),
+      );
       const edgeIds = new Set(edges.filter((e) => e.selected).map((e) => e.id));
-      if (nodeIds.size === 0 && edgeIds.size === 0) return;
+      if (nodeIds.size === 0 && edgeIds.size === 0 && commentIds.size === 0) return;
       const current = docRef.current;
       const touches = (e: DocEdge) =>
         edgeIds.has(e.id) || nodeIds.has(e.source) || nodeIds.has(e.target);
@@ -526,6 +915,7 @@ function App() {
           ...current,
           nodes: current.nodes.filter((n) => !nodeIds.has(n.id)),
           edges: current.edges.filter((e) => !touches(e)),
+          comments: (current.comments ?? []).filter((c) => !commentIds.has(c.id)),
         });
         setSelected((s) => (s && nodeIds.has(s) ? null : s));
       }
@@ -546,7 +936,7 @@ function App() {
    * carries a JSON payload so paste works across canvases. */
   const copySelection = useCallback((): boolean => {
     if (window.getSelection()?.toString()) return false;
-    const ids = new Set(nodes.filter((n) => n.selected).map((n) => n.id));
+    const ids = new Set(nodes.filter((n) => n.selected && n.type === "forgeBlock").map((n) => n.id));
     if (ids.size === 0 && selected) ids.add(selected);
     if (ids.size === 0) return false;
     const current = docRef.current;
@@ -719,9 +1109,16 @@ function App() {
                 <div
                   key={block.block_id}
                   className="sf-palette-block"
-                  title={block.doc ?? block.block_id}
                   draggable
-                  onDragStart={(e) => e.dataTransfer.setData("application/starforge-block", block.block_id)}
+                  onDragStart={(e) => {
+                    setHoverCard(null);
+                    e.dataTransfer.setData("application/starforge-block", block.block_id);
+                  }}
+                  onMouseEnter={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHoverCard({ block, top: Math.min(rect.top, window.innerHeight - 320) });
+                  }}
+                  onMouseLeave={() => setHoverCard(null)}
                 >
                   {block.label}
                 </div>
@@ -739,7 +1136,64 @@ function App() {
             ))}
           </div>
         )}
+        <div className="sf-annotations">
+          <div className="sf-category-name">Annotations</div>
+          <div
+            className="sf-comment-palette-item"
+            draggable
+            title="Drag onto canvas to add a comment annotation"
+            onDragStart={(e) => e.dataTransfer.setData("application/starforge-comment", "1")}
+          >
+            <div className="sf-comment-palette-title">Comment</div>
+            <div className="sf-comment-palette-sub">Annotation block</div>
+          </div>
+        </div>
       </aside>
+
+      {hoverCard && (
+        <div className="sf-hover-card" style={{ top: hoverCard.top }}>
+          <div className="sf-hover-head">
+            <span className="sf-title">{hoverCard.block.label}</span>
+            <span
+              className="sf-badge"
+              style={{
+                background: resolveCategoryStyle(hoverCard.block.category).badgeBg,
+                color: resolveCategoryStyle(hoverCard.block.category).badgeText,
+              }}
+            >
+              {resolveCategoryStyle(hoverCard.block.category).icon} {hoverCard.block.category}
+            </span>
+          </div>
+          {hoverCard.block.doc && <p className="sf-docstring">{hoverCard.block.doc}</p>}
+          {hoverCard.block.params.length > 0 && (
+            <>
+              <div className="sf-hover-section">inputs</div>
+              {hoverCard.block.params.map((p) => (
+                <div key={p.name} className="sf-hover-row">
+                  <code>{p.name}</code>
+                  {p.annotation && <span className="sf-annotation">: {p.annotation}</span>}
+                  {p.default_repr !== null && <span className="sf-annotation"> = {p.default_repr}</span>}
+                  {p.default_repr === null && p.optional && <span className="sf-annotation"> (optional)</span>}
+                </div>
+              ))}
+            </>
+          )}
+          <div className="sf-hover-section">outputs</div>
+          {hoverCard.block.outputs.map((name, i) => (
+            <div key={name} className="sf-hover-row">
+              <code>{name}</code>
+              {hoverCard.block.output_annotations?.[i] && (
+                <span className="sf-annotation">: {hoverCard.block.output_annotations[i]}</span>
+              )}
+            </div>
+          ))}
+          {hoverCard.block.file && (
+            <div className="sf-hover-source">
+              {hoverCard.block.file}:{hoverCard.block.lineno} · drag onto the canvas
+            </div>
+          )}
+        </div>
+      )}
 
       <main
         className="sf-canvas"
@@ -775,9 +1229,15 @@ function App() {
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onNodeDragStart={onNodeDragStart}
+          onNodeDrag={onNodeDrag}
           onNodeDragStop={onNodeDragStop}
+          onEdgeMouseEnter={(event, edge) => {
+            const warning = (edge.data as any)?.warning;
+            if (warning) setEdgeTip({ text: warning, x: event.clientX, y: event.clientY });
+          }}
+          onEdgeMouseLeave={() => setEdgeTip(null)}
           deleteKeyCode={null}
-          onNodeClick={(_e, node) => setSelected(node.id)}
+          onNodeClick={(_e, node) => setSelected(node.type === "forgeBlock" ? node.id : null)}
           onPaneClick={() => setSelected(null)}
           // Desktop Forge interaction model (Canvas.tsx): LMB drag draws a
           // selection box; middle/right mouse pans.
@@ -857,7 +1317,16 @@ function App() {
                   {p.annotation && <span className="sf-annotation">: {p.annotation}</span>}
                 </label>
                 {wired ? (
-                  <span className="sf-wired-tag">via edge</span>
+                  <>
+                    <span className="sf-wired-tag">via edge</span>
+                    {(() => {
+                      const edge = doc.edges.find(
+                        (e) => e.target === selectedNode.id && e.target_param === p.name,
+                      );
+                      const warning = edge ? edgeWarning(edge) : null;
+                      return warning ? <div className="sf-edge-warning-note">⚠ {warning}</div> : null;
+                    })()}
+                  </>
                 ) : (
                   <input
                     key={`${selectedNode.id}:${p.name}`}
@@ -910,7 +1379,7 @@ function App() {
                   <PreviewView
                     preview={o.preview}
                     artifact={o.artifact}
-                    onOpenFigure={(figure) => setLightbox({ items: [figure], index: 0 })}
+                    onOpenFigure={(figure) => openFigure([figure], 0)}
                   />
                 </div>
               ))}
@@ -927,17 +1396,17 @@ function App() {
                           draggable={false}
                           title="Click to expand"
                           onClick={() =>
-                            setLightbox({
-                              items: manifest.figures.map((g: any) => ({ uri: g.uri, kind: g.kind })),
-                              index: i,
-                            })
+                            openFigure(
+                              manifest.figures.map((g: any) => ({ uri: g.uri, kind: g.kind, path: g.path })),
+                              i,
+                            )
                           }
                         />
                       ) : (
                         <button
                           key={f.file}
                           className="sf-figure-chip"
-                          onClick={() => setLightbox({ items: [{ uri: f.uri, kind: f.kind }], index: 0 })}
+                          onClick={() => openFigure([{ uri: f.uri, kind: f.kind, path: f.path }], 0)}
                         >
                           ⧉ {f.file}
                         </button>
@@ -955,18 +1424,34 @@ function App() {
         </aside>
       )}
 
+      {edgeTip && (
+        <div
+          className="sf-edge-tooltip"
+          style={{ left: Math.min(edgeTip.x + 12, window.innerWidth - 280), top: edgeTip.y + 14 }}
+        >
+          ⚠ {edgeTip.text}
+        </div>
+      )}
+
       {lightbox && (
         <div className="sf-lightbox" onClick={() => setLightbox(null)}>
           <div className="sf-lightbox-body" onClick={(e) => e.stopPropagation()}>
             {lightbox.items[lightbox.index].kind === "image" ? (
               <img className="sf-lightbox-img" src={lightbox.items[lightbox.index].uri} draggable={false} />
             ) : (
-              <iframe
-                className="sf-lightbox-frame"
-                src={lightbox.items[lightbox.index].uri}
-                sandbox="allow-scripts"
-                title="interactive figure"
-              />
+              <div className="sf-lightbox-html-card">
+                <span className="sf-lightbox-html-icon">⧉</span>
+                <span>Interactive figure</span>
+                <button
+                  className="sf-btn"
+                  onClick={() => {
+                    openFigure([lightbox.items[lightbox.index]], 0);
+                    setLightbox(null);
+                  }}
+                >
+                  Open interactive panel
+                </button>
+              </div>
             )}
             <div className="sf-lightbox-bar">
               {lightbox.items.length > 1 && (
@@ -994,6 +1479,17 @@ function App() {
                     →
                   </button>
                 </>
+              )}
+              {lightbox.items[lightbox.index].kind === "html" && lightbox.items[lightbox.index].path && (
+                <button
+                  className="sf-btn sf-lightbox-nav"
+                  title="Open in your default browser"
+                  onClick={() =>
+                    vscode.postMessage({ type: "openExternal", payload: lightbox.items[lightbox.index].path })
+                  }
+                >
+                  ↗ Browser
+                </button>
               )}
               <button className="sf-btn sf-lightbox-nav sf-lightbox-close" onClick={() => setLightbox(null)}>
                 ✕

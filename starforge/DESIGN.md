@@ -240,16 +240,16 @@ Decorator package · AST indexer · core engine (hashing/staleness/serializers/c
 **Demo criterion (met):** decorate two functions → draw an edge → Run → rerun is instant → edit one function → only it and descendants rerun.
 
 **M1+ — priority order** *(set by Jonathan, 2026-06-11)*
-1. Output rendering — `plt.show()`/figures inline on nodes (worker captures figures → checkpoint artifacts → thumbnails + lightbox).
-2. Progress bars / streaming / cancellation UX.
-3. Comments (canvas comments/groups parity with desktop).
-4. CodeLens decorator insertion ("⊕ Add to palette" writes `@block` into the source).
-5. Edge type warnings (static hint mismatch → squiggle, never a blocker).
-6. Registry/cache + checkpoint hygiene — these directories grow fast; max-cache-size / max-checkpoint-size extension settings + GC.
-7. Staleness tier slider (T0–T3, default T2).
-8. Palette block hover cards — inputs/outputs/docstring/source hint.
+1. ✅ Output rendering — `plt.show()`/figures inline on nodes (worker capture → checkpoint artifacts → thumbnails/carousel + lightbox).
+2. ✅ Progress bars / streaming / cancellation UX — `starforge.progress(current, total, label)` (zero-dep, no-op outside Forge), throttled `node_progress` events, desktop-style bars + live elapsed time, cancelled nodes marked.
+3. ✅ Comments — `comments[]` in the doc (never hashed), inline-editable colored boxes behind nodes, desktop color palette, resizable.
+4. ✅ CodeLens decorator insertion — "⊕ Add to *Forge palette" writes `@block` + the import into the source.
+5. ✅ Edge type warnings — per-output annotations from the indexer; confident mismatches render amber dashed with ⚠ and explain themselves in the inspector. Never blocking.
+6. ✅ Registry/cache + checkpoint hygiene — `starforge.maxCheckpointSizeMB` LRU eviction after each run (reuse touches mtime), run-spec sweeping, "Clean Checkpoint Cache" command.
+7. ✅ Staleness tier setting — `starforge.stalenessTier` T0/T1/T2 (default T2), wired kernel→provenance.
+8. ✅ Palette block hover cards — signature, outputs (typed), docstring, source location.
 9. MCP surface from the kernel (agents in VS Code author pipelines).
-10. Marketplace packaging + CI.
+10. Marketplace packaging + CI (needs publisher identity decision).
 11. Script→pipeline importer — lowest priority, likely post-v1.0.
 
 **Post-v1 — unification**
