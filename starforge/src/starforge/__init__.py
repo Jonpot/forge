@@ -8,7 +8,7 @@ kernel) lives in submodules that only *Forge itself* imports.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.3"
 
 __all__ = ["block", "progress", "BLOCK_ATTR"]
 

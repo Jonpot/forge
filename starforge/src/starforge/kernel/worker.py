@@ -52,6 +52,7 @@ def main(argv: list[str]) -> int:
             store=CheckpointStore(workspace),
             emit=emit,
             pickle_enabled=bool(spec.get("pickle_enabled", False)),
+            target=spec.get("target"),
         )
     except Exception:
         import traceback

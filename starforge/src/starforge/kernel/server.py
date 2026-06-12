@@ -227,6 +227,7 @@ class Kernel:
             "blocks": referenced,
             "states": {nid: state.to_dict() for nid, state in states.items()},
             "pickle_enabled": bool(self.settings.get("pickle_enabled", False)),
+            "target": params.get("target"),
         }
         runs_dir = workspace / ".forge" / "cache" / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)

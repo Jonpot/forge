@@ -28,7 +28,7 @@ def _purge_workspace_modules(workspace_root: str) -> None:
             del sys.modules[name]
 
 
-def execute(workspace, doc_dict, cache=None, pickle_enabled=False):
+def execute(workspace, doc_dict, cache=None, pickle_enabled=False, target=None):
     """One simulated worker run; returns (events, states, cache)."""
     root = str(workspace.root)
     index, cache = scan_workspace(workspace.root, cache)
@@ -58,6 +58,7 @@ def execute(workspace, doc_dict, cache=None, pickle_enabled=False):
             store,
             events.append,
             pickle_enabled=pickle_enabled,
+            target=target,
         )
     finally:
         sys.path.remove(root)
@@ -110,6 +111,22 @@ def test_param_change_reruns_only_affected_subgraph(workspace):
     assert names(events, "node_completed") == ["n2", "n3"]
     store = CheckpointStore(str(workspace.root))
     assert store.load_output(states["n3"].history_hash, "total") == 50
+
+
+def test_run_to_here_executes_only_the_ancestor_cone(workspace):
+    """Targeting n2 runs n1+n2; n3 (downstream) is never touched — no events,
+    no checkpoint."""
+    doc = three_node_doc()
+    events, states, cache = execute(workspace, doc, target="n2")
+    assert names(events, "node_completed") == ["n1", "n2"]
+    assert all(e.get("node") != "n3" for e in events if "node" in e)
+    store = CheckpointStore(str(workspace.root))
+    assert not store.exists(states["n3"].history_hash)
+
+    # Full run afterward reuses the cone and finishes the rest.
+    events, _, _ = execute(workspace, doc, cache)
+    assert names(events, "node_skipped") == ["n1", "n2"]
+    assert names(events, "node_completed") == ["n3"]
 
 
 def test_failure_blocks_descendants_but_not_independent_branches(workspace):

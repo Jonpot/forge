@@ -21,6 +21,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import "./styles.css";
 import { resolveCategoryStyle } from "./categoryStyles";
+import { computeLayout } from "./layout";
 
 declare function acquireVsCodeApi(): { postMessage(message: any): void };
 const vscode = acquireVsCodeApi();
@@ -360,6 +361,19 @@ interface CommentNodeData {
  * resizer. (Desktop's custom HSV editor is a later nicety.) */
 function CommentNode({ data, selected }: NodeProps<CommentNodeData>) {
   const [menuOpen, setMenuOpen] = useState(false);
+  // Controlled inputs with focus-guarded sync: text written externally (an
+  // MCP agent editing the doc, undo/redo) must appear, but never clobber
+  // what the user is mid-typing.
+  const [title, setTitle] = useState(data.title);
+  const [body, setBody] = useState(data.description);
+  const titleRef = useRef<HTMLInputElement | null>(null);
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    if (document.activeElement !== titleRef.current) setTitle(data.title);
+  }, [data.title]);
+  useEffect(() => {
+    if (document.activeElement !== bodyRef.current) setBody(data.description);
+  }, [data.description]);
   const theme = commentTheme(data.color, selected || menuOpen);
   useEffect(() => {
     if (!selected) setMenuOpen(false);
@@ -384,11 +398,13 @@ function CommentNode({ data, selected }: NodeProps<CommentNodeData>) {
       />
       <div className="sf-comment-head">
         <input
+          ref={titleRef}
           className="sf-comment-title nodrag nopan"
-          defaultValue={data.title}
+          value={title}
           placeholder="Comment Title"
           style={{ color: theme.color }}
-          onBlur={(e) => e.target.value !== data.title && data.onChange({ title: e.target.value })}
+          onChange={(e) => setTitle(e.target.value)}
+          onBlur={() => title !== data.title && data.onChange({ title })}
         />
         <button
           className="sf-comment-swatch nodrag nopan"
@@ -402,10 +418,12 @@ function CommentNode({ data, selected }: NodeProps<CommentNodeData>) {
       </div>
       <div className="sf-comment-separator" style={{ background: theme.separator }} />
       <textarea
+        ref={bodyRef}
         className="sf-comment-body nodrag nopan"
-        defaultValue={data.description}
+        value={body}
         placeholder="Add a description…"
-        onBlur={(e) => e.target.value !== data.description && data.onChange({ description: e.target.value })}
+        onChange={(e) => setBody(e.target.value)}
+        onBlur={() => body !== data.description && data.onChange({ description: body })}
       />
       {menuOpen && (
         <div className="sf-comment-menu nodrag nopan" onClick={(e) => e.stopPropagation()}>
@@ -528,6 +546,13 @@ function App() {
   const [startedAt, setStartedAt] = useState<Record<string, number>>({});
   const [hoverCard, setHoverCard] = useState<{ block: BlockInfo; top: number } | null>(null);
   const [edgeTip, setEdgeTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  // The canvas is only meaningful once BOTH the doc and the palette have
+  // arrived: without block info, nodes read as "not found" and edges have no
+  // param handles to anchor to. Hold the loading screen until both land
+  // (a kernel error counts — then the problems shown are truthful).
+  const [docReady, setDocReady] = useState(false);
+  const [paletteReady, setPaletteReady] = useState(false);
+  const ready = docReady && paletteReady;
   const lightboxRef = useRef<LightboxState>(null);
   lightboxRef.current = lightbox;
 
@@ -555,12 +580,14 @@ function App() {
       const { type, payload } = event.data;
       const seen = lastSeenRef.current;
       if (type === "doc") {
+        setDocReady(true);
         const normalized = normalizeDoc(payload);
         const serialized = JSON.stringify(normalized);
         if (seen.doc === serialized) return;
         seen.doc = serialized;
         setDoc(normalized);
       } else if (type === "palette") {
+        setPaletteReady(true);
         const serialized = JSON.stringify(payload);
         if (seen.palette === serialized) return;
         seen.palette = serialized;
@@ -611,7 +638,10 @@ function App() {
         if (seen.figures === serialized) return;
         seen.figures = serialized;
         setNodeFigures(payload);
-      } else if (type === "kernelError") setKernelError(payload);
+      } else if (type === "kernelError") {
+        setKernelError(payload);
+        setPaletteReady(true); // canvas must not wait forever for a dead kernel
+      }
     };
     window.addEventListener("message", onMessage);
     vscode.postMessage({ type: "ready" });
@@ -896,14 +926,16 @@ function App() {
    * their edges are removed but the nodes stay. We own the keybinding
    * (deleteKeyCode={null}) so React Flow never half-applies a deletion. */
   const deleteSelection = useCallback(
-    (prune: boolean) => {
-      const nodeIds = new Set(
-        nodes.filter((n) => n.selected && n.type === "forgeBlock").map((n) => n.id),
-      );
-      const commentIds = new Set(
-        nodes.filter((n) => n.selected && n.type === "forgeComment").map((n) => n.id),
-      );
-      const edgeIds = new Set(edges.filter((e) => e.selected).map((e) => e.id));
+    (prune: boolean, explicitNodeIds?: Set<string>) => {
+      const nodeIds =
+        explicitNodeIds ??
+        new Set(nodes.filter((n) => n.selected && n.type === "forgeBlock").map((n) => n.id));
+      const commentIds = explicitNodeIds
+        ? new Set<string>()
+        : new Set(nodes.filter((n) => n.selected && n.type === "forgeComment").map((n) => n.id));
+      const edgeIds = explicitNodeIds
+        ? new Set<string>()
+        : new Set(edges.filter((e) => e.selected).map((e) => e.id));
       if (nodeIds.size === 0 && edgeIds.size === 0 && commentIds.size === 0) return;
       const current = docRef.current;
       const touches = (e: DocEdge) =>
@@ -934,9 +966,11 @@ function App() {
   /** Ctrl/Cmd+C: selected nodes + the edges BETWEEN them. Mirrors desktop
    * App.tsx: native copy wins when text is selected; the system clipboard
    * carries a JSON payload so paste works across canvases. */
-  const copySelection = useCallback((): boolean => {
-    if (window.getSelection()?.toString()) return false;
-    const ids = new Set(nodes.filter((n) => n.selected && n.type === "forgeBlock").map((n) => n.id));
+  const copySelection = useCallback((explicitIds?: Set<string>): boolean => {
+    if (!explicitIds && window.getSelection()?.toString()) return false;
+    const ids =
+      explicitIds ??
+      new Set(nodes.filter((n) => n.selected && n.type === "forgeBlock").map((n) => n.id));
     if (ids.size === 0 && selected) ids.add(selected);
     if (ids.size === 0) return false;
     const current = docRef.current;
@@ -1009,8 +1043,39 @@ function App() {
     setSelected(pastedNodes.length === 1 ? pastedNodes[0].id : null);
   }, [commit]);
 
-  const keyActionsRef = useRef({ copy: copySelection, paste: pasteClipboard });
-  keyActionsRef.current = { copy: copySelection, paste: pasteClipboard };
+  const selectAll = useCallback(() => {
+    setNodes((ns) => ns.map((n) => ({ ...n, selected: true })));
+    setEdges((es) => es.map((e) => ({ ...e, selected: true })));
+  }, [setNodes, setEdges]);
+
+  const keyActionsRef = useRef({ copy: copySelection, paste: pasteClipboard, selectAll });
+  keyActionsRef.current = { copy: copySelection, paste: pasteClipboard, selectAll };
+
+  // ------------------------------------------------------- context menu
+
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+
+  /** Layered auto-arrange (the desktop "prettify"), Sugiyama-style: see
+   * layout.ts — crossing minimization, corridor reservation for long edges,
+   * neighbor alignment for short cluster edges. Uses measured node sizes. */
+  const arrange = useCallback(() => {
+    const current = docRef.current;
+    if (current.nodes.length === 0) return;
+    const measured = new Map(nodes.map((n) => [n.id, { width: n.width ?? 220, height: n.height ?? 150 }]));
+    const positions = computeLayout(
+      current.nodes.map((n) => ({
+        id: n.id,
+        width: measured.get(n.id)?.width ?? 220,
+        height: measured.get(n.id)?.height ?? 150,
+      })),
+      current.edges.map((e) => ({ source: e.source, target: e.target })),
+    );
+    commit({
+      ...current,
+      nodes: current.nodes.map((n) => ({ ...n, position: positions.get(n.id) ?? n.position })),
+    });
+    setTimeout(() => flowRef.current?.fitView({ padding: 0.15, duration: 300 }), 80);
+  }, [nodes, commit]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1030,16 +1095,43 @@ function App() {
         return; // never eat keystrokes from text fields
       }
       const isMod = event.ctrlKey || event.metaKey;
-      if (isMod && !event.altKey && !event.shiftKey) {
+      if (isMod && !event.altKey) {
         const key = event.key.toLowerCase();
-        if (key === "c") {
-          if (keyActionsRef.current.copy()) event.preventDefault();
+        if (key === "z" && event.shiftKey) {
+          event.preventDefault();
+          vscode.postMessage({ type: "redo" });
           return;
         }
-        if (key === "v") {
-          event.preventDefault();
-          void keyActionsRef.current.paste();
-          return;
+        if (!event.shiftKey) {
+          if (key === "c") {
+            if (keyActionsRef.current.copy()) event.preventDefault();
+            return;
+          }
+          if (key === "v") {
+            event.preventDefault();
+            void keyActionsRef.current.paste();
+            return;
+          }
+          if (key === "z") {
+            event.preventDefault();
+            vscode.postMessage({ type: "undo" });
+            return;
+          }
+          if (key === "y") {
+            event.preventDefault();
+            vscode.postMessage({ type: "redo" });
+            return;
+          }
+          if (key === "s") {
+            event.preventDefault();
+            vscode.postMessage({ type: "save" });
+            return;
+          }
+          if (key === "a") {
+            event.preventDefault();
+            keyActionsRef.current.selectAll();
+            return;
+          }
         }
       }
       if (event.key !== "Delete" && event.key !== "Backspace") return;
@@ -1206,6 +1298,14 @@ function App() {
           <span className="sf-summary">
             {doc.nodes.length} nodes · {staleCount} stale
           </span>
+          <button
+            className="sf-btn sf-ghost"
+            title="Auto-arrange the pipeline left-to-right"
+            disabled={doc.nodes.length === 0}
+            onClick={arrange}
+          >
+            ✨ Arrange
+          </button>
           {runId ? (
             <button className="sf-btn sf-cancel" onClick={() => vscode.postMessage({ type: "cancel", payload: runId })}>
               ■ Cancel
@@ -1238,12 +1338,27 @@ function App() {
           onEdgeMouseLeave={() => setEdgeTip(null)}
           deleteKeyCode={null}
           onNodeClick={(_e, node) => setSelected(node.type === "forgeBlock" ? node.id : null)}
-          onPaneClick={() => setSelected(null)}
+          onNodeContextMenu={(event, node) => {
+            if (node.type !== "forgeBlock") return;
+            event.preventDefault();
+            event.stopPropagation();
+            setSelected(node.id);
+            setCtxMenu({
+              x: Math.min(event.clientX, window.innerWidth - 200),
+              y: Math.min(event.clientY, window.innerHeight - 220),
+              nodeId: node.id,
+            });
+          }}
+          onPaneClick={() => {
+            setSelected(null);
+            setCtxMenu(null);
+          }}
           // Desktop Forge interaction model (Canvas.tsx): LMB drag draws a
           // selection box; middle/right mouse pans.
           selectionOnDrag
           selectionMode={SelectionMode.Full}
           panOnDrag={[1, 2]}
+          minZoom={0.05}
           fitView
           proOptions={{ hideAttribution: true }}
         >
@@ -1422,6 +1537,95 @@ function App() {
             </div>
           )}
         </aside>
+      )}
+
+      {!ready && (
+        <div className="sf-loading">
+          <span className="sf-loading-spark">✱</span>
+          <span>Loading pipeline…</span>
+        </div>
+      )}
+
+      {ready && doc.nodes.length === 0 && (doc.comments ?? []).length === 0 && (
+        <div className="sf-empty-canvas">
+          {palette.length > 1 ? (
+            <>
+              <div className="sf-empty-title">Drag a block from the palette to begin</div>
+              <div className="sf-empty-sub">
+                Wire outputs into parameters · right-click a node to run to it · everything checkpoints
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="sf-empty-title">No blocks in this workspace yet</div>
+              <div className="sf-empty-sub">
+                <code>pip install starforge-kernel</code>, decorate a function with <code>@block</code>, save —
+                or use the “⊕ Add to *Forge palette” CodeLens on any function.
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {ctxMenu && (
+        <>
+          <div className="sf-ctx-backdrop" onClick={() => setCtxMenu(null)} onContextMenu={(e) => e.preventDefault()} />
+          <div className="sf-ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
+            <button
+              className="sf-ctx-item"
+              disabled={runId !== null}
+              onClick={() => {
+                vscode.postMessage({ type: "run", payload: { target: ctxMenu.nodeId } });
+                setCtxMenu(null);
+              }}
+            >
+              ▶ Run to here
+            </button>
+            {(() => {
+              const node = doc.nodes.find((n) => n.id === ctxMenu.nodeId);
+              const info = node ? blocksById.get(node.block) : undefined;
+              return info?.file ? (
+                <button
+                  className="sf-ctx-item"
+                  onClick={() => {
+                    vscode.postMessage({ type: "openSource", payload: { file: info.file, lineno: info.lineno } });
+                    setCtxMenu(null);
+                  }}
+                >
+                  ↗ Open source
+                </button>
+              ) : null;
+            })()}
+            <button
+              className="sf-ctx-item"
+              onClick={() => {
+                copySelection(new Set([ctxMenu.nodeId]));
+                setCtxMenu(null);
+              }}
+            >
+              ⧉ Copy
+            </button>
+            <div className="sf-ctx-separator" />
+            <button
+              className="sf-ctx-item"
+              onClick={() => {
+                deleteSelection(true, new Set([ctxMenu.nodeId]));
+                setCtxMenu(null);
+              }}
+            >
+              ✂ Prune edges
+            </button>
+            <button
+              className="sf-ctx-item sf-ctx-danger"
+              onClick={() => {
+                deleteSelection(false, new Set([ctxMenu.nodeId]));
+                setCtxMenu(null);
+              }}
+            >
+              ✕ Delete
+            </button>
+          </div>
+        </>
       )}
 
       {edgeTip && (

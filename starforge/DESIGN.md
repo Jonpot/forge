@@ -248,9 +248,11 @@ Decorator package · AST indexer · core engine (hashing/staleness/serializers/c
 6. ✅ Registry/cache + checkpoint hygiene — `starforge.maxCheckpointSizeMB` LRU eviction after each run (reuse touches mtime), run-spec sweeping, "Clean Checkpoint Cache" command.
 7. ✅ Staleness tier setting — `starforge.stalenessTier` T0/T1/T2 (default T2), wired kernel→provenance.
 8. ✅ Palette block hover cards — signature, outputs (typed), docstring, source location.
-9. MCP surface from the kernel (agents in VS Code author pipelines).
-10. Marketplace packaging + CI (needs publisher identity decision).
+9. ✅ MCP surface — `python -m starforge.mcp` (optional `[mcp]` extra): list_blocks, list/read/write_pipeline (validated, returns staleness), pipeline_state, run_pipeline (sync, supports `target`), inspect_node with previews. Agents author and run pipelines against the same engine.
+10. ✅ Marketplace — published as `jonpot.starforge` (v0.1.0 live; 0.1.1 VSIX adds run-to-here, context menu, undo/redo/save/select-all keys, ✨ Arrange auto-layout, empty-state guidance, MCP). PyPI artifacts for `starforge-kernel` built + twine-checked in `starforge/dist/`, upload pending.
 11. Script→pipeline importer — lowest priority, likely post-v1.0.
+
+**Also shipped beyond the original list:** run-to-here (targeted ancestor-cone execution, engine + context menu), node context menu (run/source/copy/prune/delete), canvas keyboard parity (Ctrl+Z/Y undo-redo through the text document, Ctrl+S, Ctrl+A), topological auto-arrange, empty-canvas onboarding hints.
 
 **Post-v1 — unification**
 Desktop app migrates to `starforge.core`; v1 engine deleted.

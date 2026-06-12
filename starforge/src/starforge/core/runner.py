@@ -63,14 +63,34 @@ class _NodePlanInfo:
     problems: list[str]
 
 
+def _ancestor_cone(doc: PipelineDoc, target: str) -> set[str]:
+    """The target plus everything upstream of it."""
+    cone = {target}
+    frontier = [target]
+    while frontier:
+        nid = frontier.pop()
+        for edge in doc.in_edges(nid):
+            if edge.source not in cone:
+                cone.add(edge.source)
+                frontier.append(edge.source)
+    return cone
+
+
 def plan_execution(
     doc: PipelineDoc,
     states: dict[str, dict[str, Any]],
     store: CheckpointStore,
+    target: str | None = None,
 ) -> tuple[list[str], set[str], set[str], set[str]]:
-    """Returns (topo_order, execute, reuse, blocked)."""
+    """Returns (topo_order, execute, reuse, blocked).
+
+    With ``target``, planning is scoped to the target's ancestor cone —
+    "run to here": only what's needed to produce that node executes."""
     order, cyclic = toposort(doc)
-    blocked: set[str] = set(cyclic)
+    if target is not None and any(n.id == target for n in doc.nodes):
+        cone = _ancestor_cone(doc, target)
+        order = [nid for nid in order if nid in cone]
+    blocked: set[str] = set(cyclic) & set(order)
     execute: set[str] = set()
 
     for nid in order:
@@ -139,10 +159,11 @@ def run_pipeline(
     store: CheckpointStore,
     emit: Emit,
     pickle_enabled: bool = False,
+    target: str | None = None,
 ) -> str:
     """Execute the plan; returns terminal status: 'completed' or 'failed'."""
     store.ensure_layout()
-    order, execute, reuse, blocked = plan_execution(doc, states, store)
+    order, execute, reuse, blocked = plan_execution(doc, states, store, target=target)
     emit(
         {
             "event": "run_plan",

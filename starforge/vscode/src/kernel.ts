@@ -35,6 +35,21 @@ type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
 const IDLE_SHUTDOWN_MS = 5 * 60 * 1000;
 
+/** Kernel and extension version in lockstep (scripts/version_sync.py). An
+ * older installed kernel gets a friendly upgrade nudge instead of mystery
+ * protocol failures. */
+const MIN_KERNEL_VERSION = "0.1.2";
+
+function versionAtLeast(actual: string, required: string): boolean {
+  const a = actual.split(".").map((n) => parseInt(n, 10) || 0);
+  const r = required.split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] ?? 0) > (r[i] ?? 0)) return true;
+    if ((a[i] ?? 0) < (r[i] ?? 0)) return false;
+  }
+  return true;
+}
+
 export class KernelClient implements vscode.Disposable {
   private proc: ChildProcess | undefined;
   private nextId = 0;
@@ -51,7 +66,7 @@ export class KernelClient implements vscode.Disposable {
     private readonly output: vscode.OutputChannel,
   ) {}
 
-  private async resolvePython(): Promise<string> {
+  async resolvePython(): Promise<string> {
     const configured = vscode.workspace.getConfiguration("starforge").get<string>("pythonPath");
     if (configured) return configured;
     try {
@@ -116,6 +131,12 @@ export class KernelClient implements vscode.Disposable {
       },
     });
     this.output.appendLine(`[kernel] ready: v${init.kernel_version} (python ${init.python})`);
+    if (init.kernel_version && !versionAtLeast(String(init.kernel_version), MIN_KERNEL_VERSION)) {
+      void vscode.window.showWarningMessage(
+        `*Forge kernel ${init.kernel_version} is older than this extension expects (${MIN_KERNEL_VERSION}+). ` +
+          `Some features may misbehave — upgrade with: pip install -U "starforge-kernel[mcp]"`,
+      );
+    }
   }
 
   private onData(chunk: Buffer): void {
@@ -178,8 +199,8 @@ export class KernelClient implements vscode.Disposable {
     return result.nodes;
   }
 
-  async runStart(doc: any): Promise<string> {
-    const result = await this.request("run/start", { doc });
+  async runStart(doc: any, target?: string): Promise<string> {
+    const result = await this.request("run/start", target ? { doc, target } : { doc });
     return result.run_id;
   }
 

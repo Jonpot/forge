@@ -123,4 +123,9 @@ class PipelineDoc:
         return cls.from_json(Path(path).read_text(encoding="utf-8"))
 
     def save(self, path: str | Path) -> None:
-        Path(path).write_text(self.to_json() + "\n", encoding="utf-8")
+        # Atomic: the canvas (or any watcher) must never observe a truncated
+        # or empty file mid-write — agents and humans edit concurrently.
+        target = Path(path)
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(self.to_json() + "\n", encoding="utf-8")
+        tmp.replace(target)

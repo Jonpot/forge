@@ -92,6 +92,86 @@ export function activate(context: vscode.ExtensionContext): void {
       new AddBlockLensProvider(),
     ),
 
+    vscode.commands.registerCommand("starforge.setupMcp", async () => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) {
+        void vscode.window.showErrorMessage("*Forge: open a folder first.");
+        return;
+      }
+      const python = await kernelFor(folder, output).resolvePython();
+      const picks = await vscode.window.showQuickPick(
+        [
+          {
+            label: "VS Code agents (.vscode/mcp.json)",
+            description: "Copilot agent mode & MCP-aware VS Code agents",
+            picked: true,
+            id: "vscode",
+          },
+          {
+            label: "Claude Code (.mcp.json)",
+            description: "Project-scoped server for Claude Code",
+            picked: true,
+            id: "claude",
+          },
+          {
+            label: "Copy setup prompt",
+            description: "Paste into any agent's chat to let it configure itself",
+            picked: false,
+            id: "prompt",
+          },
+        ],
+        { canPickMany: true, title: "*Forge: register the MCP server for agents in this workspace" },
+      );
+      if (!picks?.length) return;
+
+      const mergeJson = async (uri: vscode.Uri, mutate: (config: any) => void): Promise<void> => {
+        let config: any = {};
+        try {
+          config = JSON.parse(Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf-8"));
+        } catch {
+          // missing or invalid — start fresh
+        }
+        mutate(config);
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(config, null, 2) + "\n", "utf-8"));
+      };
+
+      const done: string[] = [];
+      for (const pick of picks) {
+        const id = (pick as any).id;
+        if (id === "vscode") {
+          await mergeJson(vscode.Uri.joinPath(folder.uri, ".vscode", "mcp.json"), (config) => {
+            config.servers = config.servers ?? {};
+            config.servers.starforge = {
+              type: "stdio",
+              command: python,
+              args: ["-m", "starforge.mcp", "${workspaceFolder}"],
+            };
+          });
+          done.push(".vscode/mcp.json");
+        } else if (id === "claude") {
+          await mergeJson(vscode.Uri.joinPath(folder.uri, ".mcp.json"), (config) => {
+            config.mcpServers = config.mcpServers ?? {};
+            // Claude Code launches servers with cwd = project root; the
+            // server defaults its workspace to ".", so no path is baked in.
+            config.mcpServers.starforge = { command: python, args: ["-m", "starforge.mcp"] };
+          });
+          done.push(".mcp.json");
+        } else if (id === "prompt") {
+          await vscode.env.clipboard.writeText(
+            "Set up the *Forge MCP server for this repository so you can author and run " +
+              "visual pipelines:\n" +
+              `1. Ensure the kernel is installed in the repo's Python environment: pip install "starforge-kernel[mcp]"\n` +
+              `2. Register an MCP server named "starforge" with command: ${python} and args: ["-m", "starforge.mcp"], run from the repository root.\n` +
+              "3. Reconnect/restart so the tools load, then call starforge_list_blocks to see available blocks, " +
+              "read any .forge file under .forge/pipelines/ for the document schema, and use starforge_write_pipeline + " +
+              "starforge_run_pipeline to build and execute. Edges target parameter NAMES; runs only execute stale nodes.",
+          );
+          done.push("setup prompt → clipboard");
+        }
+      }
+      void vscode.window.showInformationMessage(`*Forge MCP server registered: ${done.join(", ")}.`);
+    }),
+
     // Settings feed the kernel at initialize; restart lazily on change.
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("starforge")) {
@@ -249,8 +329,13 @@ class CanvasEditorProvider implements vscode.CustomTextEditorProvider {
     let pendingWrites = 0;
 
     const parseDoc = (): any | undefined => {
+      const text = document.getText();
+      // Empty text is NOT an empty pipeline — it's what a watcher reload
+      // sees mid-write when an external process (MCP agent) rewrites the
+      // file. Treating it as a doc once wiped the whole canvas.
+      if (!text.trim()) return undefined;
       try {
-        return JSON.parse(document.getText() || "{}");
+        return JSON.parse(text);
       } catch {
         return undefined; // mid-edit invalid JSON — keep last good state
       }
@@ -326,6 +411,10 @@ class CanvasEditorProvider implements vscode.CustomTextEditorProvider {
       panel.webview.onDidReceiveMessage(async (message) => {
         switch (message.type) {
           case "ready": {
+            // The doc must reach the canvas IMMEDIATELY — the kernel spawn
+            // below can take seconds, and a blank canvas reads as data loss.
+            const initialDoc = parseDoc();
+            if (initialDoc) post("doc", initialDoc);
             try {
               post("palette", await kernel.scan());
             } catch (err: any) {
@@ -359,12 +448,21 @@ class CanvasEditorProvider implements vscode.CustomTextEditorProvider {
             try {
               // Desktop semantics: Run saves the pipeline first, always.
               if (document.isDirty) await document.save();
-              post("runStarted", await kernel.runStart(doc));
+              post("runStarted", await kernel.runStart(doc, message.payload?.target));
             } catch (err: any) {
               post("kernelError", err.message);
             }
             break;
           }
+          case "undo":
+            await vscode.commands.executeCommand("undo");
+            break;
+          case "redo":
+            await vscode.commands.executeCommand("redo");
+            break;
+          case "save":
+            if (document.isDirty) await document.save();
+            break;
           case "cancel":
             await kernel.runCancel(message.payload).catch(() => undefined);
             break;

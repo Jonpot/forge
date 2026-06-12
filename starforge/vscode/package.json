@@ -2,12 +2,21 @@
   "name": "starforge",
   "displayName": "*Forge",
   "description": "Pipeline canvas, checkpointing, and stale/hydrate execution for the repo you already have open.",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "publisher": "jonpot",
   "license": "Apache-2.0",
-  "repository": { "type": "git", "url": "https://github.com/Jonpot/forge" },
-  "engines": { "vscode": "^1.90.0" },
-  "categories": ["Data Science", "Visualization", "Other"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jonpot/forge"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Data Science",
+    "Visualization",
+    "Other"
+  ],
   "icon": "icon.png",
   "main": "./dist/extension.js",
   "activationEvents": [],
@@ -16,15 +25,35 @@
       {
         "viewType": "starforge.canvas",
         "displayName": "*Forge Canvas",
-        "selector": [{ "filenamePattern": "*.forge" }],
+        "selector": [
+          {
+            "filenamePattern": "*.forge"
+          }
+        ],
         "priority": "default"
       }
     ],
     "commands": [
-      { "command": "starforge.newPipeline", "title": "*Forge: New Pipeline" },
-      { "command": "starforge.rescan", "title": "*Forge: Rescan Workspace Blocks" },
-      { "command": "starforge.restartKernel", "title": "*Forge: Restart Kernel" },
-      { "command": "starforge.cleanCheckpoints", "title": "*Forge: Clean Checkpoint Cache" }
+      {
+        "command": "starforge.newPipeline",
+        "title": "*Forge: New Pipeline"
+      },
+      {
+        "command": "starforge.rescan",
+        "title": "*Forge: Rescan Workspace Blocks"
+      },
+      {
+        "command": "starforge.restartKernel",
+        "title": "*Forge: Restart Kernel"
+      },
+      {
+        "command": "starforge.cleanCheckpoints",
+        "title": "*Forge: Clean Checkpoint Cache"
+      },
+      {
+        "command": "starforge.setupMcp",
+        "title": "*Forge: Set Up MCP for Agents"
+      }
     ],
     "configuration": {
       "title": "*Forge",
@@ -41,12 +70,16 @@
         },
         "starforge.stalenessTier": {
           "type": "string",
-          "enum": ["T0", "T1", "T2"],
+          "enum": [
+            "T0",
+            "T1",
+            "T2"
+          ],
           "default": "T2",
           "enumDescriptions": [
-            "Function body only — cheapest; edits to helpers are NOT detected (risk of stale-but-green results).",
-            "Function + its module — catches same-file helper edits; cross-module helpers are NOT detected.",
-            "Function + repo import closure (recommended) — any edit to an imported module marks dependents stale. Over-invalidates safely: extra reruns, never wrong data."
+            "Function body only \u2014 cheapest; edits to helpers are NOT detected (risk of stale-but-green results).",
+            "Function + its module \u2014 catches same-file helper edits; cross-module helpers are NOT detected.",
+            "Function + repo import closure (recommended) \u2014 any edit to an imported module marks dependents stale. Over-invalidates safely: extra reruns, never wrong data."
           ],
           "description": "How much surrounding code participates in staleness detection."
         },

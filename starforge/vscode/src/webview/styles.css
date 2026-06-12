@@ -401,6 +401,55 @@ body {
 .sf-handle-type-left { right: calc(100% + 10px); text-align: right; }
 .sf-handle-type-right { left: calc(100% + 10px); text-align: left; }
 
+/* ------------------------------------------------------------ context menu */
+.sf-ctx-backdrop { position: fixed; inset: 0; z-index: 48; }
+.sf-ctx-menu {
+  position: fixed; z-index: 49; min-width: 172px;
+  background: var(--forge-surface);
+  border: 1px solid var(--forge-border-mid); border-radius: 8px;
+  box-shadow: 0 14px 30px -8px rgba(0, 0, 0, 0.6);
+  padding: 5px; animation: sf-fade-in 100ms var(--ease-out-quart) both;
+}
+.sf-ctx-item {
+  display: block; width: 100%; text-align: left;
+  background: none; border: none; border-radius: 5px;
+  color: var(--forge-text); font-size: 12px; font-family: inherit;
+  padding: 6px 10px; cursor: pointer;
+}
+.sf-ctx-item:hover:not(:disabled) { background: var(--forge-border); }
+.sf-ctx-item:disabled { opacity: 0.4; cursor: default; }
+.sf-ctx-danger { color: var(--forge-error); }
+.sf-ctx-separator { height: 1px; background: var(--forge-border); margin: 4px 6px; }
+
+/* ----------------------------------------------------------------- loading */
+.sf-loading {
+  position: fixed; inset: 0; z-index: 46;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; background: var(--forge-bg);
+  color: var(--forge-muted); font-size: 13px;
+}
+.sf-loading-spark {
+  font-size: 34px; color: var(--forge-accent);
+  animation: sf-spark 1.4s ease-in-out infinite;
+}
+@keyframes sf-spark {
+  0%, 100% { opacity: 0.45; transform: scale(0.94) rotate(0deg); }
+  50% { opacity: 1; transform: scale(1.06) rotate(45deg); }
+}
+
+/* ------------------------------------------------------------- empty state */
+.sf-empty-canvas {
+  position: absolute; inset: 0; z-index: 4;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; pointer-events: none; text-align: center; padding: 0 40px;
+}
+.sf-empty-title { font-size: 15px; font-weight: 600; color: var(--forge-muted); }
+.sf-empty-sub { font-size: 12px; color: var(--forge-muted); opacity: 0.8; max-width: 460px; line-height: 1.6; }
+.sf-empty-sub code {
+  background: var(--forge-surface); border: 1px solid var(--forge-border);
+  border-radius: 4px; padding: 1px 5px;
+}
+
 .sf-edge-tooltip {
   position: fixed; z-index: 45; max-width: 270px;
   background: var(--forge-surface);
